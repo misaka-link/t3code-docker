@@ -44,6 +44,16 @@ export function parseSha256Sums(content: string, assetFilename: string): string 
   return null;
 }
 
+export function parseElectronBuilderSha512(
+  ymlContent: string,
+  assetFilename: string,
+): string | null {
+  const escaped = assetFilename.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const regex = new RegExp(`url:\\s*${escaped}[\\s\\S]*?sha512:\\s*([A-Za-z0-9+/=]+)`);
+  const match = regex.exec(ymlContent);
+  return match?.[1]?.trim() ?? null;
+}
+
 export function resolveExpectedAssetName(
   version: string,
   variant: "full" | "headless",
@@ -264,16 +274,6 @@ export class VersionHubService {
     await fs.mkdir(stageDir, { recursive: true });
 
     try {
-      const sumsRes = await fetch(`${baseUrl}/v${version}/SHA256SUMS`);
-      if (!sumsRes.ok) {
-        throw new Error(`Failed to fetch SHA256SUMS (HTTP ${sumsRes.status})`);
-      }
-      const sumsText = await sumsRes.text();
-      const expectedSha = parseSha256Sums(sumsText, assetName);
-      if (!expectedSha) {
-        throw new Error(`Asset ${assetName} not found in release v${version} SHA256SUMS`);
-      }
-
       const archivePath = path.join(stageDir, assetName);
       const assetRes = await fetch(`${baseUrl}/v${version}/${assetName}`);
       if (!assetRes.ok) {
@@ -281,12 +281,44 @@ export class VersionHubService {
       }
       const arrayBuf = await assetRes.arrayBuffer();
       const buf = Buffer.from(arrayBuf);
-      const actualSha = crypto.createHash("sha256").update(buf).digest("hex");
-      if (actualSha !== expectedSha) {
-        throw new Error(
-          `SHA-256 mismatch for ${assetName}: expected ${expectedSha}, got ${actualSha}`,
-        );
+
+      if (assetName.endsWith(".deb")) {
+        const ymlPrefix = version.includes("-nightly.") ? "nightly" : "latest";
+        const ymlName =
+          process.arch === "arm64" ? `${ymlPrefix}-linux-arm64.yml` : `${ymlPrefix}-linux.yml`;
+        const ymlRes = await fetch(`${baseUrl}/v${version}/${ymlName}`);
+        if (!ymlRes.ok) {
+          throw new Error(`Failed to fetch ${ymlName} (HTTP ${ymlRes.status})`);
+        }
+        const ymlText = await ymlRes.text();
+        const expectedSha512 = parseElectronBuilderSha512(ymlText, assetName);
+        if (!expectedSha512) {
+          throw new Error(`Asset ${assetName} not found in release v${version} ${ymlName}`);
+        }
+        const actualSha512 = crypto.createHash("sha512").update(buf).digest("base64");
+        if (actualSha512 !== expectedSha512) {
+          throw new Error(
+            `SHA-512 mismatch for ${assetName}: expected ${expectedSha512}, got ${actualSha512}`,
+          );
+        }
+      } else {
+        const sumsRes = await fetch(`${baseUrl}/v${version}/SHA256SUMS`);
+        if (!sumsRes.ok) {
+          throw new Error(`Failed to fetch SHA256SUMS (HTTP ${sumsRes.status})`);
+        }
+        const sumsText = await sumsRes.text();
+        const expectedSha = parseSha256Sums(sumsText, assetName);
+        if (!expectedSha) {
+          throw new Error(`Asset ${assetName} not found in release v${version} SHA256SUMS`);
+        }
+        const actualSha = crypto.createHash("sha256").update(buf).digest("hex");
+        if (actualSha !== expectedSha) {
+          throw new Error(
+            `SHA-256 mismatch for ${assetName}: expected ${expectedSha}, got ${actualSha}`,
+          );
+        }
       }
+
       await fs.writeFile(archivePath, buf);
 
       const unpackDir = path.join(stageDir, "unpacked");

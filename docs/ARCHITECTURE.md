@@ -260,8 +260,76 @@ flowchart LR
 | `/data/t3` | `./data/t3` | `coder:coder (0755)` | `T3CODE_HOME`：含 `userdata/`（SQLite 数据库、T3 Connect 授权、配对状态）、`runtime/versions/` 多版本缓存与 `.staging/` |
 | `/data/providers` | `./data/providers` | `coder:coder (0755)` | 在线安装的各家 Agent CLI（Claude / Codex / OpenCode 等）与 `mise` 持久化工具链 |
 | `/home/coder` | `./data/home` | `coder:coder (0750)` | 各 Agent 登录态配置（`~/.claude`、`~/.codex`、`~/.config`、SSH/Git 配置），重建容器不掉登录 |
-| `/data/snapshots` | `./data/snapshots` | `t3gw:t3gw (0750)` | 自动升级前备份与手动快照归档包 |
+| `/data/snapshots` | `./data/snapshots` | `root:root (0700)` | 自动升级前备份与手动快照归档包 |
 | `/workspace` | `./workspace` | `coder:coder (0755)` | 默认 AI 研发项目代码工作区 |
+
+### 6.3 全参数单文件 `docker-compose.yml` 参考模板（免 `.env` 独立部署版）
+
+针对倾向于不拆分 `.env` 文件、希望在单一 YAML 中直观审阅和调整所有运行参数的用户，网关对所有可选项均内置了空字符串安全兜底预处理（`emptyToUndefined`），可直接单文件保存运行：
+
+```yaml
+services:
+  t3code:
+    # 如无需虚拟桌面与有头浏览器，可替换为 ghcr.io/misaka-link/t3code-docker:headless
+    image: ghcr.io/misaka-link/t3code-docker:latest
+    container_name: t3code
+    restart: unless-stopped
+    init: true
+    shm_size: "1gb"
+    stop_grace_period: 45s
+    pids_limit: 4096
+    ports:
+      - "3080:3080"
+    environment:
+      PROXY_HOST: "0.0.0.0"
+      PROXY_PORT: "3080"
+      AUTH_TOKEN: ""               # 留空首次打开进入设密向导；填写则作为初始口令并在启动后从内存擦除
+      SESSION_SECRET: ""           # 留空自动生成 256-bit 随机签名密钥并持久化
+      ADMIN_PATH: "/admin"         # 管理控制台路径（支持后台免重启热改）
+      VNC_PATH: "/vnc"             # 虚拟桌面路径（支持后台免重启热改）
+      DEFAULT_LOCALE: "zh-CN"      # zh-CN | en-US
+      RELEASE_CHANNEL: "stable"    # stable | nightly
+      VERSIONS_MIN_FREE_MB: "1536"
+      PUID: "1000"
+      PGID: "1000"
+      TZ: "Asia/Shanghai"
+      T3_PREINSTALL: "core"        # core | all | none
+      DESKTOP_WIDTH: "1920"
+      DESKTOP_HEIGHT: "1080"
+      DESKTOP_IDLE_MINUTES: "30"
+      TRUST_PROXY: "0"
+      PUBLIC_URL: ""
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      NO_PROXY: "localhost,127.0.0.1,::1"
+      T3_UPSTREAM_HOST: "127.0.0.1"
+      T3_UPSTREAM_PORT: "3773"
+      NOVNC_UPSTREAM_PORT: "6080"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETUID
+      - SETGID
+      - KILL
+    volumes:
+      - ./data/gateway:/data/gateway
+      - ./data/t3:/data/t3
+      - ./data/providers:/data/providers
+      - ./data/home:/home/coder
+      - ./data/snapshots:/data/snapshots
+      - ./workspace:/workspace
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+```
 
 ---
 

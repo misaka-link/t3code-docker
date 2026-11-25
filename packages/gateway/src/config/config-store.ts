@@ -39,6 +39,23 @@ export class ConfigStore {
       ...(this.env.VNC_PATH ? { vncPath: this.env.VNC_PATH } : {}),
       ...(this.env.TRUST_PROXY !== undefined ? { trustProxy: this.env.TRUST_PROXY } : {}),
       ...(this.env.PUBLIC_URL ? { publicUrl: this.env.PUBLIC_URL } : {}),
+      ...(!loaded && this.env.DEFAULT_LOCALE ? { locale: this.env.DEFAULT_LOCALE } : {}),
+      ...(!loaded && this.env.RELEASE_CHANNEL ? { releaseChannel: this.env.RELEASE_CHANNEL } : {}),
+      desktop: {
+        ...base.desktop,
+        ...(this.env.DESKTOP_WIDTH !== undefined ? { width: this.env.DESKTOP_WIDTH } : {}),
+        ...(this.env.DESKTOP_HEIGHT !== undefined ? { height: this.env.DESKTOP_HEIGHT } : {}),
+        ...(this.env.DESKTOP_IDLE_MINUTES !== undefined
+          ? { idleTimeoutMinutes: this.env.DESKTOP_IDLE_MINUTES }
+          : {}),
+      },
+      workerEnv: {
+        ...base.workerEnv,
+        ...(this.env.HTTP_PROXY ? { httpProxy: this.env.HTTP_PROXY } : {}),
+        ...(this.env.HTTPS_PROXY ? { httpsProxy: this.env.HTTPS_PROXY } : {}),
+        ...(this.env.ALL_PROXY ? { allProxy: this.env.ALL_PROXY } : {}),
+        ...(this.env.NO_PROXY ? { noProxy: this.env.NO_PROXY } : {}),
+      },
     });
 
     this.current = merged;

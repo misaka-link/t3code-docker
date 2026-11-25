@@ -10,7 +10,7 @@
   },
   "scripts": {
     "build": "pnpm --filter @t3-docker/shared build && pnpm --filter @t3-docker/desktop-browser-mcp build && pnpm --filter @t3-docker/console build && pnpm --filter @t3-docker/gateway build",
-    "typecheck": "pnpm -r typecheck",
+    "typecheck": "pnpm --filter @t3-docker/shared build && pnpm -r typecheck",
     "test": "vitest run",
     "test:watch": "vitest",
     "clean": "pnpm -r clean"

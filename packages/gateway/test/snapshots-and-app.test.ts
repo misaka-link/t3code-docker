@@ -15,7 +15,11 @@ import {
   isUnsafeArchiveEntryPath,
 } from "../src/snapshots/snapshot-service.js";
 import { T3ProcessSupervisor } from "../src/supervisor/t3-supervisor.js";
-import { VersionHubService } from "../src/versions/version-hub.js";
+import {
+  VersionHubService,
+  parseElectronBuilderSha512,
+  parseSha256Sums,
+} from "../src/versions/version-hub.js";
 
 describe("Snapshot Archive Safety & Fastify Unified Gateway Integration", () => {
   const tempDirs: string[] = [];
@@ -25,6 +29,26 @@ describe("Snapshot Archive Safety & Fastify Unified Gateway Integration", () => 
       await fs.rm(d, { recursive: true, force: true });
     }
     tempDirs.length = 0;
+  });
+
+  it("parses both SHA256SUMS (CLI tarballs) and electron-builder latest-linux.yml sha512 (.deb)", () => {
+    const sums = "9ba3db46e3554fb9970fd5ede9e823c2f6d6f6763f40340bd4c8ef6b09501c54  t3-0.1.12-linux-x64.tar.gz\n";
+    expect(parseSha256Sums(sums, "t3-0.1.12-linux-x64.tar.gz")).toBe(
+      "9ba3db46e3554fb9970fd5ede9e823c2f6d6f6763f40340bd4c8ef6b09501c54",
+    );
+
+    const latestLinuxYml = [
+      "version: 0.1.12",
+      "files:",
+      "  - url: T3-Code-x86_64.AppImage",
+      "    sha512: v80LyuuYEN+sbDq0exwrDuPjwcENKcrLvqvUY4aW9AJaUsL3vYnr/ExRC7oWQvEmtUBdDTXIvW+orXxoCP8h/Q==",
+      "  - url: T3-Code-0.1.12-amd64.deb",
+      "    sha512: eeZAoG5Ynn2+0dv3+xADiN9ay2dfbx2T5b6oHpGVmst+A6CiMUHsNV1yGUhGRec/6cGTS/z+a+wSYkj+9xGUtg==",
+      "    size: 209475484",
+    ].join("\n");
+    expect(parseElectronBuilderSha512(latestLinuxYml, "T3-Code-0.1.12-amd64.deb")).toBe(
+      "eeZAoG5Ynn2+0dv3+xADiN9ay2dfbx2T5b6oHpGVmst+A6CiMUHsNV1yGUhGRec/6cGTS/z+a+wSYkj+9xGUtg==",
+    );
   });
 
   it("blocks Zip-Slip path traversal entries and creates/restores verified snapshots", async () => {

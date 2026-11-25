@@ -132,6 +132,7 @@ RUN set -eux; \
 # 4. Copy compiled Gateway, Console static bundle, MCP wrapper & scripts
 COPY --from=gateway-builder /build /opt/t3-gateway
 COPY docker/scripts/bootstrap-t3-server.mjs /opt/t3-gateway/bootstrap-t3-server.mjs
+COPY docker/scripts/verify-deb-sha512.mjs /opt/t3-gateway/verify-deb-sha512.mjs
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh
 
@@ -216,16 +217,17 @@ RUN set -eux; \
     deb_arch="$([ "${TARGETARCH:-amd64}" = "arm64" ] && echo arm64 || echo amd64)"; \
     ver="${T3_VERSION}"; \
     if [ -z "${ver}" ]; then \
-      ver="$(curl -fsSL -H 'Accept: application/json' https://github.com/pingdotgg/t3code/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' | head -n 1)"; \
+      ver="$(curl -fsSL -H 'Accept: application/json' https://github.com/pingdotgg/t3code/releases/latest | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>process.stdout.write(JSON.parse(d).tag_name.replace(/^v/,'')))")"; \
     fi; \
     mkdir -p /tmp/t3-deb /opt/t3-seed/slot; \
     deb_file="T3-Code-${ver}-${deb_arch}.deb"; \
+    yml_prefix="$(echo "${ver}" | grep -q -- '-nightly\.' && echo nightly || echo latest)"; \
+    yml_suffix="$([ "${deb_arch}" = "arm64" ] && echo '-arm64' || echo '')"; \
+    yml_file="${yml_prefix}-linux${yml_suffix}.yml"; \
     base_url="https://github.com/pingdotgg/t3code/releases/download/v${ver}"; \
-    curl -fsSL "${base_url}/SHA256SUMS" -o /tmp/t3-deb/SHA256SUMS; \
-    expected="$(grep " \*\{0,1\}${deb_file}\$" /tmp/t3-deb/SHA256SUMS | cut -d' ' -f1)"; \
+    curl -fsSL "${base_url}/${yml_file}" -o /tmp/t3-deb/meta.yml; \
     curl -fsSL "${base_url}/${deb_file}" -o "/tmp/t3-deb/${deb_file}"; \
-    actual="$(sha256sum "/tmp/t3-deb/${deb_file}" | cut -d' ' -f1)"; \
-    [ "${actual}" = "${expected}" ]; \
+    node /opt/t3-gateway/verify-deb-sha512.mjs /tmp/t3-deb/meta.yml "/tmp/t3-deb/${deb_file}" "${deb_file}"; \
     dpkg-deb -x "/tmp/t3-deb/${deb_file}" /opt/t3-seed/slot; \
     app_dir="/opt/t3-seed/slot/opt/T3 Code"; \
     [ -d "${app_dir}" ] || app_dir="/opt/t3-seed/slot/opt/T3 Code (Nightly)"; \

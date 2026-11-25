@@ -15,7 +15,7 @@ env:
 jobs:
   verify:
     name: Typecheck, Unit Tests & Bundle Build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -25,15 +25,15 @@ jobs:
         with:
           node-version: "22"
           cache: "pnpm"
-      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
       - run: pnpm typecheck
       - run: pnpm test
-      - run: pnpm build
 
-  docker:
-    name: Build Multi-Arch (${{ matrix.variant }})
+  docker-build:
+    name: Build (${{ matrix.variant }} / ${{ matrix.slug }})
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -42,13 +42,30 @@ jobs:
       matrix:
         include:
           - variant: full
-            tag_suffix: ""
+            platform: linux/amd64
+            runner: ubuntu-24.04
+            slug: amd64
+          - variant: full
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            slug: arm64
           - variant: headless
-            tag_suffix: "-headless"
+            platform: linux/amd64
+            runner: ubuntu-24.04
+            slug: amd64
+          - variant: headless
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            slug: arm64
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
+
+      - name: Normalize image name
+        id: meta
+        run: |
+          IMAGE_LC="$(echo "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
+          echo "image_lc=${IMAGE_LC}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
@@ -58,29 +75,102 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute tags
-        id: meta
-        run: |
-          IMAGE_LC="$(echo "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
-          if [ "${{ matrix.variant }}" = "full" ]; then
-            TAGS="${REGISTRY}/${IMAGE_LC}:latest"
-          else
-            TAGS="${REGISTRY}/${IMAGE_LC}:headless,${REGISTRY}/${IMAGE_LC}:slim"
-          fi
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            VER="${GITHUB_REF#refs/tags/v}"
-            TAGS="${TAGS},${REGISTRY}/${IMAGE_LC}:${VER}${{ matrix.tag_suffix }},${REGISTRY}/${IMAGE_LC}:v${VER}${{ matrix.tag_suffix }}"
-          fi
-          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push (${{ matrix.variant }})
+      - name: Build and push by digest (push/dispatch)
+        if: github.event_name != 'pull_request'
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile
           target: ${{ matrix.variant }}
-          platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          cache-from: type=gha,scope=${{ matrix.variant }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ steps.meta.outputs.image_lc }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.variant }}-${{ matrix.slug }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}-${{ matrix.slug }}
+
+      - name: Build check only (pull_request)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: ${{ matrix.variant }}
+          platforms: ${{ matrix.platform }}
+          push: false
+          cache-from: type=gha,scope=${{ matrix.variant }}-${{ matrix.slug }}
+
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p "${{ runner.temp }}/digests/${{ matrix.variant }}"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${{ matrix.variant }}/${digest#sha256:}"
+
+      - name: Upload digest artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.variant }}-${{ matrix.slug }}
+          path: ${{ runner.temp }}/digests/${{ matrix.variant }}/*
+          if-no-files-found: error
+          retention-days: 1
+
+  docker-merge:
+    name: Publish Multi-Arch Manifests
+    needs: docker-build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download full digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests/full
+          pattern: digests-full-*
+          merge-multiple: true
+
+      - name: Download headless digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests/headless
+          pattern: digests-headless-*
+          merge-multiple: true
+
+      - name: Create and inspect multi-arch manifests
+        run: |
+          set -eux
+          IMAGE_LC="$(echo "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
+          REPO_URI="${REGISTRY}/${IMAGE_LC}"
+
+          FULL_IMAGES=""
+          for d in $(ls -1 "${{ runner.temp }}/digests/full"); do
+            FULL_IMAGES="${FULL_IMAGES} ${REPO_URI}@sha256:${d}"
+          done
+
+          HEADLESS_IMAGES=""
+          for d in $(ls -1 "${{ runner.temp }}/digests/headless"); do
+            HEADLESS_IMAGES="${HEADLESS_IMAGES} ${REPO_URI}@sha256:${d}"
+          done
+
+          docker buildx imagetools create -t "${REPO_URI}:latest" ${FULL_IMAGES}
+          docker buildx imagetools create -t "${REPO_URI}:headless" -t "${REPO_URI}:slim" ${HEADLESS_IMAGES}
+
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VER="${GITHUB_REF#refs/tags/v}"
+            docker buildx imagetools create -t "${REPO_URI}:${VER}" -t "${REPO_URI}:v${VER}" ${FULL_IMAGES}
+            docker buildx imagetools create -t "${REPO_URI}:${VER}-headless" -t "${REPO_URI}:v${VER}-headless" ${HEADLESS_IMAGES}
+          fi
+
+          docker buildx imagetools inspect "${REPO_URI}:latest"
+          docker buildx imagetools inspect "${REPO_URI}:headless"

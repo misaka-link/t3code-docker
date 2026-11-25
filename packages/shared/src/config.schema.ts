@@ -105,6 +105,12 @@ export const GatewayPersistedConfigSchema = BaseGatewayPersistedConfigSchema.ref
 );
 export type GatewayPersistedConfig = z.infer<typeof GatewayPersistedConfigSchema>;
 
+const emptyToUndefined = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess(
+    (val) => (typeof val === "string" && val.trim() === "" ? undefined : val),
+    schema.optional(),
+  );
+
 const booleanFromEnv = z
   .union([z.boolean(), z.string()])
   .optional()
@@ -123,12 +129,14 @@ export const GatewayEnvSchema = z.object({
   T3_UPSTREAM_HOST: z.string().default("127.0.0.1"),
   T3_UPSTREAM_PORT: z.coerce.number().int().min(1).max(65535).default(3773),
   NOVNC_UPSTREAM_PORT: z.coerce.number().int().min(1).max(65535).default(6080),
-  AUTH_TOKEN: z.string().optional(),
-  SESSION_SECRET: z.string().optional(),
-  ADMIN_PATH: CustomRoutePathSchema.optional(),
-  VNC_PATH: CustomRoutePathSchema.optional(),
+  AUTH_TOKEN: emptyToUndefined(z.string()),
+  SESSION_SECRET: emptyToUndefined(z.string()),
+  ADMIN_PATH: emptyToUndefined(CustomRoutePathSchema),
+  VNC_PATH: emptyToUndefined(CustomRoutePathSchema),
+  DEFAULT_LOCALE: emptyToUndefined(z.enum(SUPPORTED_LOCALES)),
+  RELEASE_CHANNEL: emptyToUndefined(z.enum(RELEASE_CHANNELS)),
   TRUST_PROXY: booleanFromEnv,
-  PUBLIC_URL: z.string().optional(),
+  PUBLIC_URL: emptyToUndefined(z.string()),
   T3GW_VARIANT: z.enum(IMAGE_VARIANTS).default("full"),
   T3GW_DATA_DIR: z.string().default("/data/gateway"),
   T3CODE_HOME: z.string().default("/data/t3"),
@@ -142,5 +150,12 @@ export const GatewayEnvSchema = z.object({
   CONSOLE_DIST_DIR: z.string().default(""),
   VERSIONS_MIN_FREE_MB: z.coerce.number().int().min(128).default(1536),
   T3_PREINSTALL: z.enum(["core", "all", "none"]).default("core"),
+  DESKTOP_WIDTH: emptyToUndefined(z.coerce.number().int().min(800).max(3840)),
+  DESKTOP_HEIGHT: emptyToUndefined(z.coerce.number().int().min(600).max(2160)),
+  DESKTOP_IDLE_MINUTES: emptyToUndefined(z.coerce.number().int().min(0).max(1440)),
+  HTTP_PROXY: emptyToUndefined(z.string()),
+  HTTPS_PROXY: emptyToUndefined(z.string()),
+  ALL_PROXY: emptyToUndefined(z.string()),
+  NO_PROXY: emptyToUndefined(z.string()),
 });
 export type GatewayEnv = z.infer<typeof GatewayEnvSchema>;

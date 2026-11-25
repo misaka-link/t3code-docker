@@ -17,16 +17,23 @@ services:
     environment:
       - PROXY_PORT=${PROXY_PORT:-3080}
       - AUTH_TOKEN=${AUTH_TOKEN:-}
+      - SESSION_SECRET=${SESSION_SECRET:-}
       - ADMIN_PATH=${ADMIN_PATH:-/admin}
       - VNC_PATH=${VNC_PATH:-/vnc}
+      - DEFAULT_LOCALE=${DEFAULT_LOCALE:-zh-CN}
+      - RELEASE_CHANNEL=${RELEASE_CHANNEL:-stable}
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
       - TZ=${TZ:-Asia/Shanghai}
       - TRUST_PROXY=${TRUST_PROXY:-0}
       - PUBLIC_URL=${PUBLIC_URL:-}
       - T3_PREINSTALL=${T3_PREINSTALL:-core}
+      - DESKTOP_WIDTH=${DESKTOP_WIDTH:-1920}
+      - DESKTOP_HEIGHT=${DESKTOP_HEIGHT:-1080}
+      - DESKTOP_IDLE_MINUTES=${DESKTOP_IDLE_MINUTES:-30}
       - HTTP_PROXY=${HTTP_PROXY:-}
       - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - ALL_PROXY=${ALL_PROXY:-}
       - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,::1}
     security_opt:
       - no-new-privileges:true
