@@ -1,0 +1,144 @@
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { GatewayEnvSchema, WorkerEnvConfigSchema } from "@t3-docker/shared";
+import {
+  GatewayAuthService,
+  resolveClientIp,
+  verifyWebSocketOrigin,
+} from "../src/security/auth-service.js";
+import {
+  buildCleanWorkerEnv,
+  consumeAndScrubProcessSecrets,
+} from "../src/security/env-sanitizer.js";
+
+describe("Environment Sanitizer & Gateway Security", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(async () => {
+    for (const d of tempDirs) {
+      await fs.rm(d, { recursive: true, force: true });
+    }
+    tempDirs.length = 0;
+  });
+
+  it("consumes AUTH_TOKEN and SESSION_SECRET and scrubs them from process env", () => {
+    const fakeEnv: NodeJS.ProcessEnv = {
+      PATH: "/usr/bin",
+      AUTH_TOKEN: "my-super-secret",
+      SESSION_SECRET: "custom-session-key",
+      T3GW_SECRET_INTERNAL: "hidden",
+    };
+
+    const consumed = consumeAndScrubProcessSecrets(fakeEnv);
+    expect(consumed.initialAuthToken).toBe("my-super-secret");
+    expect(consumed.initialSessionSecret).toBe("custom-session-key");
+    expect(fakeEnv.AUTH_TOKEN).toBeUndefined();
+    expect(fakeEnv.SESSION_SECRET).toBeUndefined();
+    expect(fakeEnv.T3GW_SECRET_INTERNAL).toBeUndefined();
+  });
+
+  it("builds a clean worker env free of NODE_ENV, ELECTRON_RUN_AS_NODE, DISPLAY, and T3GW_* vars", () => {
+    const dirtyBase: NodeJS.ProcessEnv = {
+      PATH: "/usr/local/bin:/usr/bin",
+      NODE_ENV: "production",
+      ELECTRON_RUN_AS_NODE: "1",
+      T3CODE_DESKTOP_CLI_LAUNCHER: "1",
+      DISPLAY: ":99",
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/dbus",
+      LC_ALL: "zh_CN.UTF-8",
+      LANGUAGE: "zh_CN:zh",
+      AUTH_TOKEN: "leaked",
+      T3GW_VARIANT: "full",
+    };
+
+    const gatewayEnv = GatewayEnvSchema.parse({});
+    const workerEnv = WorkerEnvConfigSchema.parse({
+      httpProxy: "http://127.0.0.1:7890",
+      customVars: {
+        ANTHROPIC_API_KEY: "sk-ant-test",
+      },
+    });
+
+    const clean = buildCleanWorkerEnv({
+      baseEnv: dirtyBase,
+      gatewayEnv,
+      workerEnv,
+    });
+
+    expect(clean.NODE_ENV).toBeUndefined();
+    expect(clean.ELECTRON_RUN_AS_NODE).toBeUndefined();
+    expect(clean.T3CODE_DESKTOP_CLI_LAUNCHER).toBeUndefined();
+    expect(clean.DISPLAY).toBeUndefined();
+    expect(clean.DBUS_SESSION_BUS_ADDRESS).toBeUndefined();
+    expect(clean.LC_ALL).toBeUndefined();
+    expect(clean.LANGUAGE).toBeUndefined();
+    expect(clean.AUTH_TOKEN).toBeUndefined();
+    expect(clean.T3GW_VARIANT).toBeUndefined();
+
+    expect(clean.T3CODE_SERVER_BROWSER_SANDBOX).toBe("0");
+    expect(clean.HOME).toBe("/home/coder");
+    expect(clean.HTTP_PROXY).toBe("http://127.0.0.1:7890");
+    expect(clean.ANTHROPIC_API_KEY).toBe("sk-ant-test");
+  });
+
+  it("hashes passwords with scrypt, invalidates old sessions on epoch bump, and rate-limits brute force", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "t3gw-auth-"));
+    tempDirs.push(tmp);
+
+    const auth = new GatewayAuthService(tmp, 3, 60_000, 60_000);
+    await auth.init();
+    expect(auth.isSetupRequired()).toBe(true);
+
+    await auth.setPassword("correct-horse", false);
+    expect(auth.isSetupRequired()).toBe(false);
+    expect(await auth.verifyPassword("wrong")).toBe(false);
+    expect(await auth.verifyPassword("correct-horse")).toBe(true);
+
+    const issued1 = auth.issueSessionToken();
+    expect(auth.verifySessionToken(issued1.token)?.sessionId).toBe(issued1.session.sessionId);
+
+    // Rotating password with bumpEpoch=true immediately invalidates previously issued cookies
+    await auth.setPassword("new-battery-staple", true);
+    expect(auth.verifySessionToken(issued1.token)).toBeNull();
+    const issued2 = auth.issueSessionToken();
+    expect(auth.verifySessionToken(issued2.token)).not.toBeNull();
+
+    // Brute-force lockout after 3 failed attempts
+    const ip = "203.0.113.9";
+    auth.recordAuthAttempt(ip, false);
+    auth.recordAuthAttempt(ip, false);
+    expect(auth.checkRateLimit(ip).allowed).toBe(true);
+    auth.recordAuthAttempt(ip, false);
+    const blocked = auth.checkRateLimit(ip);
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.retryAfterSeconds).toBeGreaterThan(0);
+  });
+
+  it("validates WebSocket Origin headers and X-Forwarded-For trust boundary", () => {
+    expect(resolveClientIp("10.0.0.2", "1.2.3.4", false)).toBe("10.0.0.2");
+    expect(resolveClientIp("10.0.0.2", "1.2.3.4, 10.0.0.1", true)).toBe("1.2.3.4");
+
+    expect(
+      verifyWebSocketOrigin({
+        originHeader: "http://localhost:3080",
+        hostHeader: "localhost:3080",
+      }),
+    ).toBe(true);
+    expect(
+      verifyWebSocketOrigin({
+        originHeader: "https://evil.example.com",
+        hostHeader: "localhost:3080",
+        publicUrl: "https://t3.myhost.dev",
+      }),
+    ).toBe(false);
+    expect(
+      verifyWebSocketOrigin({
+        originHeader: "https://t3.myhost.dev",
+        hostHeader: "127.0.0.1:3080",
+        publicUrl: "https://t3.myhost.dev",
+      }),
+    ).toBe(true);
+  });
+});

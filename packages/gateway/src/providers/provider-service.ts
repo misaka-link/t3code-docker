@@ -1,0 +1,342 @@
+import * as crypto from "node:crypto";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import {
+  AGENT_PROVIDER_CATALOG,
+  MISE_TOOL_CATALOG,
+  type CustomAiGateway,
+  type GatewayEnv,
+  type ProvidersOverview,
+  type WorkerEnvConfig,
+} from "@t3-docker/shared";
+import type { ConfigStore } from "../config/config-store.js";
+import type { T3ProcessSupervisor } from "../supervisor/t3-supervisor.js";
+import { fileExists, writeFileAtomic } from "../utils/atomic-fs.js";
+import { runWorkerCommand } from "../utils/cli-runner.js";
+
+function maskApiKey(key: string): string {
+  if (key.length <= 8) return "••••••••";
+  return `${key.slice(0, 4)}••••${key.slice(-4)}`;
+}
+
+export class ProviderToolchainService {
+  private busyTask: string | null = null;
+  private headlessPlaywrightMcpEnabled = false;
+  private readonly desktopWakeTokenPath: string;
+  private desktopWakeToken = "";
+
+  public constructor(
+    private readonly gatewayEnv: GatewayEnv,
+    private readonly configStore: ConfigStore,
+    private readonly supervisor: T3ProcessSupervisor,
+  ) {
+    this.desktopWakeTokenPath = path.join(gatewayEnv.T3CODE_HOME, ".desktop-mcp-token");
+  }
+
+  public async init(): Promise<void> {
+    this.desktopWakeToken = crypto.randomBytes(24).toString("hex");
+    await writeFileAtomic(this.desktopWakeTokenPath, `${this.desktopWakeToken}\n`, 0o644).catch(
+      () => undefined,
+    );
+  }
+
+  public verifyDesktopWakeToken(presented: string | undefined): boolean {
+    if (!presented || !this.desktopWakeToken) return false;
+    const a = Buffer.from(presented);
+    const b = Buffer.from(this.desktopWakeToken);
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  }
+
+  public startBackgroundPreinstallIfNeeded(): void {
+    if (this.gatewayEnv.T3_PREINSTALL === "none") return;
+    const stampPath = path.join(this.gatewayEnv.T3GW_PROVIDERS_DIR, ".preinstall-done");
+    void (async () => {
+      if (await fileExists(stampPath)) return;
+      const targets =
+        this.gatewayEnv.T3_PREINSTALL === "all"
+          ? AGENT_PROVIDER_CATALOG
+          : AGENT_PROVIDER_CATALOG.filter((a) => a.defaultPreinstall);
+      for (const item of targets) {
+        if (!item.npmPackage) continue;
+        await this.mutatePackage({ kind: "agent", id: item.id, action: "install" }).catch(
+          () => undefined,
+        );
+      }
+      await writeFileAtomic(stampPath, `${new Date().toISOString()}\n`).catch(() => undefined);
+    })();
+  }
+
+  public async getOverview(): Promise<ProvidersOverview> {
+    const cfg = this.configStore.get();
+
+    const agents = await Promise.all(
+      AGENT_PROVIDER_CATALOG.map(async (item) => {
+        const version = await this.probeBinaryVersion(item.binary);
+        return {
+          id: item.id,
+          name: item.name,
+          binary: item.binary,
+          ...(item.npmPackage ? { npmPackage: item.npmPackage } : {}),
+          installed: version !== null,
+          version,
+          installHint: item.installHint,
+          supportsCustomGateway: item.supportsCustomGateway,
+        };
+      }),
+    );
+
+    const toolchains = await Promise.all(
+      MISE_TOOL_CATALOG.map(async (tool) => {
+        const version = await this.probeBinaryVersion(tool.binary);
+        return {
+          id: tool.id,
+          name: tool.name,
+          category: tool.category,
+          binary: tool.binary,
+          installed: version !== null,
+          version,
+        };
+      }),
+    );
+
+    return {
+      agents,
+      toolchains,
+      workerEnv: cfg.workerEnv,
+      aiGateways: cfg.aiGateways.map(({ apiKey, ...rest }) => ({
+        ...rest,
+        apiKeyMasked: maskApiKey(apiKey),
+      })),
+      desktopBrowserMcpEnabled: cfg.desktop.enableDesktopBrowserMcp,
+      headlessPlaywrightMcpEnabled: this.headlessPlaywrightMcpEnabled,
+      busyTask: this.busyTask,
+    };
+  }
+
+  public async mutatePackage(input: {
+    readonly kind: "agent" | "toolchain";
+    readonly id: string;
+    readonly action: "install" | "upgrade" | "uninstall";
+  }): Promise<ProvidersOverview> {
+    if (this.busyTask) {
+      throw new Error(`Another package task is currently running: ${this.busyTask}`);
+    }
+
+    const label = `${input.action}:${input.kind}:${input.id}`;
+    this.busyTask = label;
+    try {
+      if (input.kind === "agent") {
+        const item = AGENT_PROVIDER_CATALOG.find((a) => a.id === input.id);
+        if (!item?.npmPackage) {
+          throw new Error(`Unsupported or non-npm agent package: ${input.id}`);
+        }
+        const prefix = path.join(this.gatewayEnv.T3GW_PROVIDERS_DIR, "npm-global");
+        await fs.mkdir(prefix, { recursive: true });
+        const npmArgs =
+          input.action === "uninstall"
+            ? ["uninstall", "-g", "--prefix", prefix, item.npmPackage]
+            : ["install", "-g", "--prefix", prefix, `${item.npmPackage}@latest`];
+
+        const res = await runWorkerCommand({
+          command: "npm",
+          args: npmArgs,
+          gatewayEnv: this.gatewayEnv,
+          workerEnv: this.configStore.get().workerEnv,
+          timeoutMs: 5 * 60_000,
+        });
+        if (res.code !== 0) {
+          throw new Error(`npm ${input.action} failed: ${res.stderr || res.stdout}`);
+        }
+      } else {
+        const tool = MISE_TOOL_CATALOG.find((t) => t.id === input.id);
+        if (!tool) {
+          throw new Error(`Unsupported mise toolchain: ${input.id}`);
+        }
+        const miseArgs =
+          input.action === "uninstall"
+            ? ["uninstall", tool.miseSpec]
+            : ["use", "--global", "--yes", tool.miseSpec];
+
+        const res = await runWorkerCommand({
+          command: "mise",
+          args: miseArgs,
+          gatewayEnv: this.gatewayEnv,
+          workerEnv: this.configStore.get().workerEnv,
+          timeoutMs: 10 * 60_000,
+        });
+        if (res.code !== 0) {
+          throw new Error(`mise ${input.action} failed: ${res.stderr || res.stdout}`);
+        }
+      }
+
+      if (this.configStore.get().desktop.enableDesktopBrowserMcp) {
+        await this.syncBrowserMcpRegistrations(true, this.headlessPlaywrightMcpEnabled).catch(
+          () => undefined,
+        );
+      }
+
+      return await this.getOverview();
+    } finally {
+      this.busyTask = null;
+    }
+  }
+
+  public async updateWorkerEnv(
+    workerEnv: WorkerEnvConfig,
+    restartServer: boolean,
+  ): Promise<ProvidersOverview> {
+    await this.configStore.update({ workerEnv });
+    if (restartServer && this.supervisor.getState() === "healthy") {
+      await this.supervisor.restart();
+    }
+    return this.getOverview();
+  }
+
+  public async upsertAiGateway(gateway: CustomAiGateway): Promise<ProvidersOverview> {
+    const prev = this.configStore.get().aiGateways;
+    const filtered = prev.filter((g) => g.id !== gateway.id);
+    const nextList = [...filtered, gateway];
+    await this.configStore.update({ aiGateways: nextList });
+    if (gateway.enabled) {
+      await this.applyCustomGatewayToAgentConfigs(gateway);
+    }
+    return this.getOverview();
+  }
+
+  public async deleteAiGateway(id: string): Promise<ProvidersOverview> {
+    const nextList = this.configStore.get().aiGateways.filter((g) => g.id !== id);
+    await this.configStore.update({ aiGateways: nextList });
+    return this.getOverview();
+  }
+
+  /**
+   * Zero-injection standard MCP wiring for both the Headed VNC Desktop Browser (auto-waking CDP)
+   * and optional standalone Headless Playwright MCP.
+   */
+  public async syncBrowserMcpRegistrations(
+    enableDesktopBrowserMcp: boolean,
+    enableHeadlessPlaywrightMcp: boolean,
+  ): Promise<ProvidersOverview> {
+    this.headlessPlaywrightMcpEnabled = enableHeadlessPlaywrightMcp;
+    const cfg = await this.configStore.update({
+      desktop: {
+        ...this.configStore.get().desktop,
+        enableDesktopBrowserMcp,
+      },
+    });
+
+    const claudeJsonPath = path.join(this.gatewayEnv.CODER_HOME, ".claude.json");
+    let claudeDoc: Record<string, unknown> = {};
+    try {
+      claudeDoc = JSON.parse(await fs.readFile(claudeJsonPath, "utf8")) as Record<string, unknown>;
+    } catch {
+      claudeDoc = {};
+    }
+    const mcpServers =
+      claudeDoc.mcpServers && typeof claudeDoc.mcpServers === "object"
+        ? { ...(claudeDoc.mcpServers as Record<string, unknown>) }
+        : {};
+
+    if (enableDesktopBrowserMcp && this.gatewayEnv.T3GW_VARIANT === "full") {
+      mcpServers["t3-desktop-browser"] = {
+        command: "node",
+        args: ["/opt/t3-gateway/packages/desktop-browser-mcp/dist/index.js"],
+        env: {
+          T3GW_WAKE_URL: `http://127.0.0.1:${this.gatewayEnv.PROXY_PORT}/_t3gw/internal/desktop-wake`,
+          T3GW_WAKE_TOKEN_FILE: this.desktopWakeTokenPath,
+          T3GW_CDP_PORT: String(cfg.desktop.cdpPort),
+        },
+      };
+    } else {
+      delete mcpServers["t3-desktop-browser"];
+    }
+
+    if (enableHeadlessPlaywrightMcp) {
+      mcpServers["playwright-headless"] = {
+        command: "npx",
+        args: ["-y", "@playwright/mcp@latest", "--headless", "--isolated", "--no-sandbox"],
+      };
+    } else {
+      delete mcpServers["playwright-headless"];
+    }
+
+    claudeDoc.mcpServers = mcpServers;
+    await writeFileAtomic(claudeJsonPath, `${JSON.stringify(claudeDoc, null, 2)}\n`, 0o600).catch(
+      () => undefined,
+    );
+
+    return this.getOverview();
+  }
+
+  private async applyCustomGatewayToAgentConfigs(gw: CustomAiGateway): Promise<void> {
+    if (gw.targets.includes("claude")) {
+      const claudeSettingsPath = path.join(this.gatewayEnv.CODER_HOME, ".claude", "settings.json");
+      let doc: Record<string, unknown> = {};
+      try {
+        doc = JSON.parse(await fs.readFile(claudeSettingsPath, "utf8")) as Record<string, unknown>;
+      } catch {
+        doc = {};
+      }
+      const envObj =
+        doc.env && typeof doc.env === "object" ? { ...(doc.env as Record<string, string>) } : {};
+      envObj.ANTHROPIC_BASE_URL = gw.baseUrl;
+      envObj.ANTHROPIC_AUTH_TOKEN = gw.apiKey;
+      if (gw.defaultModel) {
+        envObj.ANTHROPIC_MODEL = gw.defaultModel;
+      }
+      doc.env = envObj;
+      await writeFileAtomic(claudeSettingsPath, `${JSON.stringify(doc, null, 2)}\n`, 0o600).catch(
+        () => undefined,
+      );
+    }
+
+    if (gw.targets.includes("opencode")) {
+      const ocPath = path.join(
+        this.gatewayEnv.CODER_HOME,
+        ".config",
+        "opencode",
+        "opencode.json",
+      );
+      let doc: Record<string, unknown> = {};
+      try {
+        doc = JSON.parse(await fs.readFile(ocPath, "utf8")) as Record<string, unknown>;
+      } catch {
+        doc = {};
+      }
+      const providers =
+        doc.provider && typeof doc.provider === "object"
+          ? { ...(doc.provider as Record<string, unknown>) }
+          : {};
+      providers[gw.id] = {
+        npm: gw.protocol === "anthropic" ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible",
+        name: gw.name,
+        options: {
+          baseURL: gw.baseUrl,
+          apiKey: gw.apiKey,
+        },
+      };
+      doc.provider = providers;
+      await writeFileAtomic(ocPath, `${JSON.stringify(doc, null, 2)}\n`, 0o600).catch(
+        () => undefined,
+      );
+    }
+  }
+
+  private async probeBinaryVersion(binary: string): Promise<string | null> {
+    try {
+      const res = await runWorkerCommand({
+        command: binary,
+        args: ["--version"],
+        gatewayEnv: this.gatewayEnv,
+        workerEnv: this.configStore.get().workerEnv,
+        timeoutMs: 4_000,
+      });
+      if (res.code !== 0) return null;
+      const line = (res.stdout || res.stderr).trim().split(/\r?\n/)[0]?.trim() ?? "";
+      const semver = /(\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?)/.exec(line);
+      return semver?.[1] ?? (line.slice(0, 32) || "installed");
+    } catch {
+      return null;
+    }
+  }
+}

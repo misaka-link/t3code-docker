@@ -1,0 +1,23 @@
+{
+  "name": "t3code-docker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Production Docker suite & T3-styled unified Web Admin Gateway for T3 Code",
+  "license": "MIT",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "pnpm --filter @t3-docker/shared build && pnpm --filter @t3-docker/desktop-browser-mcp build && pnpm --filter @t3-docker/console build && pnpm --filter @t3-docker/gateway build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "pnpm -r clean"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.6"
+  }
+}

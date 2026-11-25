@@ -1,0 +1,59 @@
+services:
+  t3code:
+    image: ghcr.io/misaka-link/t3code-docker:latest
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: full
+    container_name: t3code
+    restart: unless-stopped
+    init: true
+    shm_size: "1gb"
+    stop_grace_period: 45s
+    pids_limit: 4096
+    ports:
+      # 单一统一端口（共享 T3 Code 官方 WebUI、/admin 控制台与 /vnc 按需虚拟桌面）
+      - "${PROXY_PORT:-3080}:${PROXY_PORT:-3080}"
+    environment:
+      - PROXY_PORT=${PROXY_PORT:-3080}
+      - AUTH_TOKEN=${AUTH_TOKEN:-}
+      - ADMIN_PATH=${ADMIN_PATH:-/admin}
+      - VNC_PATH=${VNC_PATH:-/vnc}
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-Asia/Shanghai}
+      - TRUST_PROXY=${TRUST_PROXY:-0}
+      - PUBLIC_URL=${PUBLIC_URL:-}
+      - T3_PREINSTALL=${T3_PREINSTALL:-core}
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,::1}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETUID
+      - SETGID
+      - KILL
+    volumes:
+      # 1. 网关安全凭据与配置目录（0700 内核级隔离，AI Agent 物理不可读）
+      - ./data/gateway:/data/gateway
+      # 2. T3 Code 核心数据与多版本槽位目录（SQLite 数据库、T3 Connect 授权、runtime/versions）
+      - ./data/t3:/data/t3
+      # 3. 持久化编码 Agent CLI 与 mise 多语言工具链目录
+      - ./data/providers:/data/providers
+      # 4. coder 用户主目录（保存 ~/.claude、~/.codex、~/.config 等各家登录凭据）
+      - ./data/home:/home/coder
+      # 5. 快照备份存档目录
+      - ./data/snapshots:/data/snapshots
+      # 6. 默认代码研发工作区
+      - ./workspace:/workspace
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
