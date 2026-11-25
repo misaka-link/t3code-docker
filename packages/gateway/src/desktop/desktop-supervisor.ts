@@ -255,7 +255,7 @@ export class DesktopSupervisor {
       "--no-default-browser-check",
       `--user-data-dir=${userDataDir}`,
       `--window-position=0,0`,
-      `--window-size=${cfg.width},${cfg.height}`,
+      `--window-size=${cfg.width},${Math.max(480, cfg.height - 38)}`,
       `--remote-debugging-address=127.0.0.1`,
       `--remote-debugging-port=${cfg.cdpPort}`,
       ...localeBundle.chromiumArgs,
@@ -290,6 +290,7 @@ export class DesktopSupervisor {
       await fs.rm(DBUS_SOCKET_PATH, { force: true }).catch(() => undefined);
 
       await this.startSecretServiceSession(localeBundle.envOverrides);
+      await this.prepareDesktopEnvironmentFiles(localeBundle.bcp47).catch(() => undefined);
 
       this.spawnManagedProcess(
         "xvfb",
@@ -309,8 +310,17 @@ export class DesktopSupervisor {
       );
       await this.delay(350);
 
+      await this.runDesktopCommand("xsetroot", ["-solid", "#141720"], 2_000).catch(() => undefined);
+
       this.spawnManagedProcess("openbox", "openbox", [], localeBundle.envOverrides);
       await this.delay(150);
+
+      if (await fileExists("/usr/bin/idesk")) {
+        this.spawnManagedProcess("idesk", "idesk", [], localeBundle.envOverrides);
+      }
+      if (await fileExists("/usr/bin/tint2")) {
+        this.spawnManagedProcess("tint2", "tint2", [], localeBundle.envOverrides);
+      }
 
       this.spawnManagedProcess(
         "x11vnc",
@@ -360,7 +370,16 @@ export class DesktopSupervisor {
 
   private async stopStackInternal(): Promise<void> {
     this.state = "stopping";
-    const reverseOrder = ["t3-desktop", "chromium", "websockify", "x11vnc", "openbox", "xvfb"];
+    const reverseOrder = [
+      "t3-desktop",
+      "chromium",
+      "tint2",
+      "idesk",
+      "websockify",
+      "x11vnc",
+      "openbox",
+      "xvfb",
+    ];
     for (const key of reverseOrder) {
       const proc = this.procs.get(key);
       if (proc) {
@@ -442,6 +461,287 @@ export class DesktopSupervisor {
   }
 
   /**
+   * Provisions VNC desktop recovery shortcuts so accidentally closed or minimized windows
+   * can be reopened directly inside VNC via:
+   * 1. Desktop background icons (`idesk`: T3 Code & Chromium)
+   * 2. Bottom dock & window taskbar (`tint2`: quick-launchers + active/minimized window list)
+   * 3. Openbox right-click desktop root menu (`~/.config/openbox/menu.xml`)
+   */
+  private async prepareDesktopEnvironmentFiles(bcp47Locale: string): Promise<void> {
+    const isZh = bcp47Locale.toLowerCase().startsWith("zh");
+    const t3MenuLabel = isZh ? "打开 / 恢复 T3 Code 客户端" : "Open / Restore T3 Code";
+    const chromeMenuLabel = isZh ? "打开 / 恢复 Chromium 浏览器" : "Open / Restore Chromium Browser";
+    const menuTitle = isZh ? "虚拟桌面快捷恢复" : "Desktop Quick Launch";
+
+    const t3IconCandidates = [
+      path.join(
+        this.gatewayEnv.T3CODE_HOME,
+        "runtime",
+        "current",
+        "usr/share/icons/hicolor/64x64/apps/t3code.png",
+      ),
+      "/opt/t3-seed/slot/usr/share/icons/hicolor/64x64/apps/t3code.png",
+      "/usr/share/icons/hicolor/64x64/apps/chromium.png",
+    ];
+    let t3Icon = "/usr/share/pixmaps/chromium.png";
+    for (const cand of t3IconCandidates) {
+      if (await fileExists(cand)) {
+        t3Icon = cand;
+        break;
+      }
+    }
+    const chromeIcon = (await fileExists("/usr/share/icons/hicolor/64x64/apps/chromium.png"))
+      ? "/usr/share/icons/hicolor/64x64/apps/chromium.png"
+      : "/usr/share/pixmaps/chromium.png";
+
+    const coderHome = this.gatewayEnv.CODER_HOME;
+    const launcherBin = path.join(coderHome, ".local", "bin", "t3gw-desktop-launch");
+    const t3DesktopEntryPath = path.join(
+      coderHome,
+      ".local",
+      "share",
+      "applications",
+      "t3code-vnc.desktop",
+    );
+    const chromeDesktopEntryPath = path.join(
+      coderHome,
+      ".local",
+      "share",
+      "applications",
+      "chromium-vnc.desktop",
+    );
+
+    const launcherScript = [
+      "#!/bin/sh",
+      'target="${1:-t3-desktop}"',
+      `token_file="${this.gatewayEnv.T3CODE_HOME}/.desktop-mcp-token"`,
+      `port="${this.gatewayEnv.PROXY_PORT}"`,
+      'token=""',
+      'if [ -f "$token_file" ]; then token="$(tr -d \'\\r\\n\' < "$token_file")"; fi',
+      'exec curl -fsS -m 15 -X POST -H "Content-Type: application/json" -H "x-t3gw-wake-token: ${token}" -d "{\\"target\\":\\"${target}\\"}" "http://127.0.0.1:${port}/_t3gw/internal/desktop-launch" >/dev/null 2>&1',
+      "",
+    ].join("\n");
+
+    const t3DesktopFile = [
+      "[Desktop Entry]",
+      "Version=1.0",
+      "Type=Application",
+      "Name=T3 Code",
+      `Comment=${t3MenuLabel}`,
+      `Exec=${launcherBin} t3-desktop`,
+      `Icon=${t3Icon}`,
+      "Terminal=false",
+      "Categories=Development;",
+      "",
+    ].join("\n");
+
+    const chromeDesktopFile = [
+      "[Desktop Entry]",
+      "Version=1.0",
+      "Type=Application",
+      `Name=${isZh ? "Chromium 浏览器" : "Chromium Browser"}`,
+      `Comment=${chromeMenuLabel}`,
+      `Exec=${launcherBin} chromium`,
+      `Icon=${chromeIcon}`,
+      "Terminal=false",
+      "Categories=Network;WebBrowser;",
+      "",
+    ].join("\n");
+
+    const ideskRc = [
+      "table Config",
+      "  FontName: WenQuanYi Zen Hei",
+      "  FontSize: 11",
+      "  FontColor: #F4F4F5",
+      "  ToolTip.FontSize: 10",
+      "  ToolTip.FontName: WenQuanYi Zen Hei",
+      "  ToolTip.ForeColor: #F4F4F5",
+      "  ToolTip.BackColor: #1E2028",
+      "  ToolTip.CaptionOnHover: false",
+      "  Locked: true",
+      "  Transparency: 75",
+      "  Shadow: true",
+      "  ShadowColor: #000000",
+      "  ShadowX: 1",
+      "  ShadowY: 1",
+      "  Bold: false",
+      "  ClickDelay: 250",
+      "  IconSnap: true",
+      "  SnapWidth: 16",
+      "  SnapHeight: 16",
+      "  SnapOrigin: TopLeft",
+      "  SnapShadow: false",
+      "  CaptionOnHover: false",
+      "  CaptionPlacement: bottom",
+      "  FillStyle: None",
+      "  Background.Delay: 0",
+      "  Background.Source: None",
+      "  Background.File: None",
+      "  Background.Mode: Center",
+      "  Background.Color: #141720",
+      "end",
+      "",
+      "table Actions",
+      "  Lock: control right doubleClk",
+      "  Reload: middle doubleClk",
+      "  Drag: right hold",
+      "  EndDrag: right singleClk",
+      "  Execute[0]: left singleClk",
+      "  Execute[1]: left doubleClk",
+      "end",
+      "",
+    ].join("\n");
+
+    const ideskT3 = [
+      "table Icon",
+      "  Caption: T3 Code",
+      `  Command: ${launcherBin} t3-desktop`,
+      `  Icon: ${t3Icon}`,
+      "  Width: 64",
+      "  Height: 64",
+      "  X: 36",
+      "  Y: 36",
+      "end",
+      "",
+    ].join("\n");
+
+    const ideskChrome = [
+      "table Icon",
+      "  Caption: Chromium",
+      `  Command: ${launcherBin} chromium`,
+      `  Icon: ${chromeIcon}`,
+      "  Width: 64",
+      "  Height: 64",
+      "  X: 36",
+      "  Y: 152",
+      "end",
+      "",
+    ].join("\n");
+
+    const tint2Rc = [
+      "# Background 1: Panel",
+      "rounded = 0",
+      "border_width = 1",
+      "border_sides = T",
+      "background_color = #141720 94",
+      "border_color = #272a36 100",
+      "",
+      "# Background 2: Default / Iconified task",
+      "rounded = 6",
+      "border_width = 1",
+      "border_sides = TBLR",
+      "background_color = #1f2432 80",
+      "border_color = #2e3446 90",
+      "background_color_hover = #2a3042 95",
+      "border_color_hover = #3f475e 100",
+      "",
+      "# Background 3: Active task",
+      "rounded = 6",
+      "border_width = 1",
+      "border_sides = TBLR",
+      "background_color = #2d3548 100",
+      "border_color = #6366f1 90",
+      "background_color_hover = #353e54 100",
+      "border_color_hover = #818cf8 100",
+      "",
+      "panel_items = LTC",
+      "panel_size = 100% 38",
+      "panel_margin = 0 0",
+      "panel_padding = 8 4 8",
+      "panel_background_id = 1",
+      "wm_menu = 1",
+      "panel_dock = 0",
+      "panel_position = bottom center horizontal",
+      "panel_layer = top",
+      "panel_monitor = all",
+      "strut_policy = follow_size",
+      "panel_window_name = tint2",
+      "autohide = 0",
+      "",
+      "launcher_padding = 4 2 8",
+      "launcher_background_id = 0",
+      "launcher_icon_background_id = 0",
+      "launcher_icon_size = 24",
+      "launcher_icon_asb = 100 0 0",
+      "launcher_icon_theme_override = 0",
+      "launcher_tooltip = 1",
+      `launcher_item_app = ${t3DesktopEntryPath}`,
+      `launcher_item_app = ${chromeDesktopEntryPath}`,
+      "",
+      "taskbar_mode = single_desktop",
+      "taskbar_padding = 4 2 6",
+      "taskbar_background_id = 0",
+      "taskbar_active_background_id = 0",
+      "task_icon = 1",
+      "task_text = 1",
+      "task_centered = 0",
+      "task_maximum_size = 240 30",
+      "task_padding = 8 4 6",
+      "task_font = WenQuanYi Zen Hei 9.5",
+      "task_font_color = #d4d4d8 100",
+      "task_active_font_color = #ffffff 100",
+      "task_iconified_font_color = #9ca3af 85",
+      "task_background_id = 2",
+      "task_active_background_id = 3",
+      "task_iconified_background_id = 2",
+      "mouse_left = toggle_iconify",
+      "mouse_middle = none",
+      "mouse_right = close",
+      "",
+      "time1_format = %H:%M",
+      "time1_font = WenQuanYi Zen Hei Bold 10",
+      "clock_font_color = #e4e4e7 100",
+      "clock_padding = 10 2",
+      "",
+    ].join("\n");
+
+    const openboxMenuXml = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<openbox_menu xmlns="http://openbox.org/3.4/menu">',
+      `  <menu id="root-menu" label="${menuTitle}">`,
+      `    <separator label="${menuTitle}" />`,
+      `    <item label="${t3MenuLabel}">`,
+      "      <action name=\"Execute\">",
+      `        <command>${launcherBin} t3-desktop</command>`,
+      "      </action>",
+      "    </item>",
+      `    <item label="${chromeMenuLabel}">`,
+      "      <action name=\"Execute\">",
+      `        <command>${launcherBin} chromium</command>`,
+      "      </action>",
+      "    </item>",
+      "  </menu>",
+      "</openbox_menu>",
+      "",
+    ].join("\n");
+
+    const filesToWrite = [
+      { file: launcherBin, content: launcherScript, mode: 0o755 },
+      { file: t3DesktopEntryPath, content: t3DesktopFile, mode: 0o755 },
+      { file: chromeDesktopEntryPath, content: chromeDesktopFile, mode: 0o755 },
+      { file: path.join(coderHome, "Desktop", "t3code-vnc.desktop"), content: t3DesktopFile, mode: 0o755 },
+      { file: path.join(coderHome, "Desktop", "chromium-vnc.desktop"), content: chromeDesktopFile, mode: 0o755 },
+      { file: path.join(coderHome, ".ideskrc"), content: ideskRc, mode: 0o644 },
+      { file: path.join(coderHome, ".idesktop", "t3code.lnk"), content: ideskT3, mode: 0o644 },
+      { file: path.join(coderHome, ".idesktop", "chromium.lnk"), content: ideskChrome, mode: 0o644 },
+      { file: path.join(coderHome, ".config", "tint2", "tint2rc"), content: tint2Rc, mode: 0o644 },
+      { file: path.join(coderHome, ".config", "openbox", "menu.xml"), content: openboxMenuXml, mode: 0o644 },
+    ];
+
+    await runWorkerCommand({
+      command: "node",
+      args: [
+        "-e",
+        "const fs=require('node:fs'),path=require('node:path');for(const item of JSON.parse(process.argv[1])){fs.mkdirSync(path.dirname(item.file),{recursive:true});const tmp=item.file+'.tmp';fs.writeFileSync(tmp,item.content,{mode:item.mode});fs.renameSync(tmp,item.file);}",
+        JSON.stringify(filesToWrite),
+      ],
+      gatewayEnv: this.gatewayEnv,
+      workerEnv: this.configStore.get().workerEnv,
+      timeoutMs: 5_000,
+    });
+  }
+
+  /**
    * Ensures `desktop-settings.json` sets `localEnvironmentEnabled: false`, `linuxPasswordStore: "gnome-libsecret"`,
    * and defaults to a maximized window on first launch so T3 Desktop attaches cleanly and fills the VNC viewport.
    */
@@ -471,16 +771,16 @@ export class DesktopSupervisor {
       localEnvironmentEnabled: false,
       linuxPasswordStore: "gnome-libsecret",
       ...(firstWindowInit
-        ? {
-            mainWindowMaximized: true,
-            mainWindowBounds: {
-              x: 0,
-              y: 0,
-              width: cfg.width,
-              height: cfg.height,
-            },
-          }
-        : {}),
+          ? {
+              mainWindowMaximized: true,
+              mainWindowBounds: {
+                x: 0,
+                y: 0,
+                width: cfg.width,
+                height: Math.max(480, cfg.height - 38),
+              },
+            }
+          : {}),
     };
 
     const payload = `${JSON.stringify(merged, null, 2)}\n`;
@@ -556,6 +856,13 @@ export class DesktopSupervisor {
   }
 
   private async hasX11Window(wmClassHint: string, titleHint: string): Promise<boolean> {
+    // Guard against wmctrl 1.07 segfaulting when Openbox _NET_CLIENT_LIST is empty
+    const clientList = await this.runDesktopCommand("xprop", ["-root", "_NET_CLIENT_LIST"], 2_000).catch(
+      () => null,
+    );
+    if (!clientList || clientList.code !== 0 || !/0x[0-9a-fA-F]+/.test(clientList.stdout)) {
+      return false;
+    }
     const res = await this.runDesktopCommand("wmctrl", ["-lx"], 2_500).catch(() => null);
     if (!res || res.code !== 0) return false;
     const lowerClass = wmClassHint.toLowerCase();

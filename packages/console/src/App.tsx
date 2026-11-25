@@ -102,6 +102,7 @@ function ConsoleShell(props: {
   }) => {
     void gatewayApi
       .updateGatewaySettings({ ...patch, revokeAllSessions: false })
+      .then(() => props.onRefreshBootstrap())
       .catch(() => undefined);
   };
 
@@ -240,7 +241,12 @@ export function App() {
   }
 
   return (
-    <UiPreferencesProvider initialLocale={bootstrap.locale} initialTheme={bootstrap.theme}>
+    <UiPreferencesProvider
+      initialLocale={bootstrap.locale}
+      effectiveAppLocale={bootstrap.effectiveAppLocale}
+      setupRequired={bootstrap.setupRequired}
+      initialTheme={bootstrap.theme}
+    >
       <ConsoleShell bootstrap={bootstrap} onRefreshBootstrap={loadBootstrap} />
     </UiPreferencesProvider>
   );

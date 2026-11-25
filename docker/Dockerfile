@@ -195,10 +195,13 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
       xvfb \
       openbox \
+      tint2 \
+      idesk \
       wmctrl \
       dbus-x11 \
       gnome-keyring \
       x11-utils \
+      x11-xserver-utils \
       x11vnc \
       novnc \
       websockify \
@@ -214,6 +217,8 @@ RUN set -eux; \
     if [ ! -e /usr/share/novnc/index.html ]; then \
       ln -s vnc.html /usr/share/novnc/index.html; \
     fi; \
+    printf '#!/bin/sh\ntarget="${1:-t3-desktop}"\ntoken_file="${T3CODE_HOME:-/data/t3}/.desktop-mcp-token"\nport="${PROXY_PORT:-3080}"\ntoken=""\nif [ -f "$token_file" ]; then token="$(tr -d "\\r\\n" < "$token_file")"; fi\nexec curl -fsS -m 15 -X POST -H "Content-Type: application/json" -H "x-t3gw-wake-token: ${token}" -d "{\\"target\\":\\"${target}\\"}" "http://127.0.0.1:${port}/_t3gw/internal/desktop-launch" >/dev/null 2>&1\n' > /usr/local/bin/t3gw-desktop-launch; \
+    chmod 0755 /usr/local/bin/t3gw-desktop-launch; \
     find /usr/lib/chromium/locales -mindepth 1 -maxdepth 1 -type f \
       ! -name 'zh-CN.pak' ! -name 'zh-TW.pak' ! -name 'en-US.pak' ! -name 'en-GB.pak' \
       ! -name 'ja.pak' ! -name 'ko.pak' ! -name 'es.pak' ! -name 'fr.pak' \

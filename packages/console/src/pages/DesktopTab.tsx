@@ -6,11 +6,22 @@ import {
   type DesktopConfig,
   type DesktopStatus,
 } from "@t3-docker/shared";
-import { useUiPreferences } from "../i18n/context";
+import { syncBrowserT3ClientLanguage, useUiPreferences } from "../i18n/context";
 import { gatewayApi } from "../lib/api";
 import { Badge, Button, Input, Select, StatusDot } from "../components/ui";
 
 const IDLE_PRESETS = [0, 5, 15, 30, 60] as const;
+
+const LOCALE_DISPLAY_NAMES: Record<string, string> = {
+  "zh-CN": "简体中文 (zh-CN)",
+  "zh-TW": "繁體中文 (zh-TW)",
+  "en-US": "English (en-US)",
+  ja: "日本語 (ja)",
+  ko: "한국어 (ko)",
+  de: "Deutsch (de)",
+  fr: "Français (fr)",
+  es: "Español (es)",
+};
 
 function formatSleepCountdown(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -35,7 +46,7 @@ interface DesktopSettingsFormProps {
  * and half-typed inputs never reset or re-render while background status updates.
  */
 const DesktopSettingsForm = memo(function DesktopSettingsForm(props: DesktopSettingsFormProps) {
-  const { t } = useUiPreferences();
+  const { t, locale } = useUiPreferences();
   const [resolutionKey, setResolutionKey] = useState(
     `${props.initialWidth}x${props.initialHeight}`,
   );
@@ -132,10 +143,12 @@ const DesktopSettingsForm = memo(function DesktopSettingsForm(props: DesktopSett
             value={langOverride}
             onChange={(e) => setLangOverride(e.target.value)}
           >
-            <option value="">Auto</option>
+            <option value="">
+              {t.desktop.followGlobalLocale} ({LOCALE_DISPLAY_NAMES[locale] ?? locale})
+            </option>
             {CHROMIUM_SUPPORTED_LOCALES.map((loc) => (
               <option key={loc} value={loc}>
-                {loc}
+                {LOCALE_DISPLAY_NAMES[loc] ?? loc}
               </option>
             ))}
           </Select>
@@ -221,6 +234,7 @@ export function DesktopTab(props: { readonly vncPath: string }) {
         setStatus(next);
         setFormConfig(next.config);
         setSyncedRevision((r) => r + 1);
+        syncBrowserT3ClientLanguage(next.config.languageOverride || next.activeLocale);
         setSavedNotice(true);
         setTimeout(() => setSavedNotice(false), 2200);
       } catch (err) {
@@ -372,6 +386,9 @@ export function DesktopTab(props: { readonly vncPath: string }) {
             </span>
           )}
         </div>
+        <p className="text-[11px] text-[var(--muted-foreground)] leading-relaxed">
+          {t.desktop.shortcutHint}
+        </p>
       </section>
 
       <DesktopSettingsForm

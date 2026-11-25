@@ -136,6 +136,28 @@ export function registerGatewayApiRoutes(app: FastifyInstance, services: Gateway
     return { ok: true, status: desktopSupervisor.getStatus() };
   });
 
+  // Loopback-only internal launcher endpoint for VNC desktop icons, taskbar & right-click menu
+  app.post("/_t3gw/internal/desktop-launch", async (req, reply) => {
+    const remote = (req.socket.remoteAddress ?? "").replace(/^::ffff:/, "");
+    if (remote !== "127.0.0.1" && remote !== "::1") {
+      return reply.code(403).send({ ok: false, error: "Loopback only" });
+    }
+    const token = req.headers["x-t3gw-wake-token"];
+    if (typeof token !== "string" || !providerService.verifyDesktopWakeToken(token)) {
+      return reply.code(401).send({ ok: false, error: "Invalid wake token" });
+    }
+    if (!desktopSupervisor.supported) {
+      return reply.code(403).send({ ok: false, error: "CAPABILITY_UNAVAILABLE" });
+    }
+    const target = (req.body as { target?: string } | undefined)?.target;
+    if (target === "chromium") {
+      await desktopSupervisor.launchChromiumBrowser(true);
+    } else {
+      await desktopSupervisor.launchT3DesktopApp();
+    }
+    return { ok: true, status: desktopSupervisor.getStatus() };
+  });
+
   // Public bootstrap metadata for Setup / Login / Console UI
   app.get(`${GATEWAY_API_PREFIX}/bootstrap`, async (req) => {
     const cfg = configStore.get();
@@ -149,6 +171,7 @@ export function registerGatewayApiRoutes(app: FastifyInstance, services: Gateway
       setupRequired: authService.isSetupRequired(),
       authenticated: session !== null,
       locale: cfg.locale,
+      effectiveAppLocale: cfg.desktop.languageOverride || cfg.locale,
       theme: cfg.theme,
       routes: {
         adminPath: cfg.adminPath,
@@ -211,23 +234,12 @@ export function registerGatewayApiRoutes(app: FastifyInstance, services: Gateway
       return reply.code(401).send({ ok: false, code: "INVALID_PASSWORD", error: "Invalid access code." });
     }
 
-    if (body.locale || body.theme) {
-      await configStore.update({
-        ...(body.locale ? { locale: body.locale } : {}),
-        ...(body.theme ? { theme: body.theme } : {}),
-      });
-    }
-    if (body.locale) {
-      await desktopSupervisor.syncLocaleFromGateway(body.locale);
-    }
-
-    const updatedCfg = configStore.get();
     const issued = authService.issueSessionToken();
     reply.setCookie(GATEWAY_SESSION_COOKIE, issued.token, {
       path: "/",
       httpOnly: true,
       sameSite: "lax",
-      secure: isSecureRequest(req, updatedCfg.trustProxy),
+      secure: isSecureRequest(req, cfg.trustProxy),
       maxAge: issued.maxAgeSeconds,
     });
     return { ok: true };

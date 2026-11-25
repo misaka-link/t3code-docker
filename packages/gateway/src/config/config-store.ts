@@ -51,6 +51,18 @@ export class ConfigStore {
       },
       workerEnv: {
         ...base.workerEnv,
+        ...(this.env.DISABLE_TELEMETRY !== undefined
+          ? {
+              disableT3Telemetry: this.env.DISABLE_TELEMETRY,
+              disableAntigravityTelemetry: this.env.DISABLE_TELEMETRY,
+            }
+          : {}),
+        ...(this.env.DISABLE_T3_TELEMETRY !== undefined
+          ? { disableT3Telemetry: this.env.DISABLE_T3_TELEMETRY }
+          : {}),
+        ...(this.env.DISABLE_ANTIGRAVITY_TELEMETRY !== undefined
+          ? { disableAntigravityTelemetry: this.env.DISABLE_ANTIGRAVITY_TELEMETRY }
+          : {}),
         ...(this.env.HTTP_PROXY ? { httpProxy: this.env.HTTP_PROXY } : {}),
         ...(this.env.HTTPS_PROXY ? { httpsProxy: this.env.HTTPS_PROXY } : {}),
         ...(this.env.ALL_PROXY ? { allProxy: this.env.ALL_PROXY } : {}),

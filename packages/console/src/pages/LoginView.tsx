@@ -2,10 +2,10 @@ import { useState, type FormEvent } from "react";
 import { Lock, Terminal, ArrowRight } from "lucide-react";
 import { useUiPreferences } from "../i18n/context";
 import { gatewayApi } from "../lib/api";
-import { Badge, Button, Input, TopLocaleThemeControls } from "../components/ui";
+import { Badge, Button, Input } from "../components/ui";
 
 export function LoginView(props: { readonly onLoggedIn: () => Promise<void> }) {
-  const { t, locale, theme } = useUiPreferences();
+  const { t } = useUiPreferences();
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -16,7 +16,7 @@ export function LoginView(props: { readonly onLoggedIn: () => Promise<void> }) {
     setError(null);
     setSubmitting(true);
     try {
-      await gatewayApi.login(password, locale, theme);
+      await gatewayApi.login(password);
       await props.onLoggedIn();
     } catch (err) {
       setError(err instanceof Error ? err.message : t.common.error);
@@ -32,7 +32,6 @@ export function LoginView(props: { readonly onLoggedIn: () => Promise<void> }) {
           <Terminal className="h-4 w-4 text-[var(--accent)]" />
           <span>T3 Code</span>
         </div>
-        <TopLocaleThemeControls />
       </header>
 
       <main className="flex-1 flex items-center justify-center p-4">

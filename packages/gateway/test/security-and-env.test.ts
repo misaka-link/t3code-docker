@@ -81,6 +81,30 @@ describe("Environment Sanitizer & Gateway Security", () => {
     expect(clean.HOME).toBe("/home/coder");
     expect(clean.HTTP_PROXY).toBe("http://127.0.0.1:7890");
     expect(clean.ANTHROPIC_API_KEY).toBe("sk-ant-test");
+
+    // Both T3 Code and Antigravity telemetry are disabled by default
+    expect(clean.T3CODE_TELEMETRY_ENABLED).toBe("false");
+    expect(clean.T3CODE_OTEL_SDK_DISABLED).toBe("true");
+    expect(clean.DO_NOT_TRACK).toBe("1");
+    expect(clean.GEMINI_TELEMETRY_ENABLED).toBe("false");
+    expect(clean.OTEL_SDK_DISABLED).toBe("true");
+    expect(clean.AGY_TELEMETRY_DISABLED).toBe("1");
+
+    // Toggling T3 telemetry ON while keeping Antigravity telemetry OFF works independently
+    const partialClean = buildCleanWorkerEnv({
+      baseEnv: dirtyBase,
+      gatewayEnv,
+      workerEnv: WorkerEnvConfigSchema.parse({
+        disableT3Telemetry: false,
+        disableAntigravityTelemetry: true,
+      }),
+    });
+    expect(partialClean.T3CODE_TELEMETRY_ENABLED).toBe("true");
+    expect(partialClean.DO_NOT_TRACK).toBeUndefined();
+    expect(partialClean.T3CODE_OTEL_SDK_DISABLED).toBeUndefined();
+    expect(partialClean.GEMINI_TELEMETRY_ENABLED).toBe("false");
+    expect(partialClean.OTEL_SDK_DISABLED).toBe("true");
+    expect(partialClean.AGY_TELEMETRY_DISABLED).toBe("1");
   });
 
   it("hashes passwords with scrypt, invalidates old sessions on epoch bump, and rate-limits brute force", async () => {

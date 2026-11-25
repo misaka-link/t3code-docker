@@ -41,6 +41,7 @@ export const BootstrapResponseSchema = z.object({
   setupRequired: z.boolean(),
   authenticated: z.boolean(),
   locale: z.enum(SUPPORTED_LOCALES),
+  effectiveAppLocale: z.string().optional(),
   theme: z.enum(THEME_MODES),
   routes: z.object({
     adminPath: z.string(),
@@ -58,8 +59,6 @@ export type SetupRequest = z.infer<typeof SetupRequestSchema>;
 
 export const LoginRequestSchema = z.object({
   password: z.string().min(1).max(128),
-  locale: z.enum(SUPPORTED_LOCALES).optional(),
-  theme: z.enum(THEME_MODES).optional(),
 });
 export type LoginRequest = z.infer<typeof LoginRequestSchema>;
 

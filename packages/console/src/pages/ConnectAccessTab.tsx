@@ -1,14 +1,14 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Check, Copy, ExternalLink, KeyRound, Link2, LogOut, RefreshCw, Trash2 } from "lucide-react";
-import type { ConnectStatus, GatewayPersistedConfig } from "@t3-docker/shared";
+import type { ConnectStatus, GatewayPersistedConfig, SupportedLocale } from "@t3-docker/shared";
 import { useUiPreferences } from "../i18n/context";
 import { gatewayApi } from "../lib/api";
-import { Badge, Button, Input, Switch } from "../components/ui";
+import { Badge, Button, Input, Select, Switch } from "../components/ui";
 
 export function ConnectAccessTab(props: {
   readonly onRoutesChanged: (adminPath: string, vncPath: string) => void;
 }) {
-  const { t } = useUiPreferences();
+  const { t, locale, setLocale } = useUiPreferences();
   const [connect, setConnect] = useState<ConnectStatus | null>(null);
   const [sessions, setSessions] = useState<Array<{ id: string; label?: string; expiresAt?: string }>>([]);
   const [pairingLink, setPairingLink] = useState<string | null>(null);
@@ -17,6 +17,7 @@ export function ConnectAccessTab(props: {
   const [savingSettings, setSavingSettings] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
 
+  const [defaultLocale, setDefaultLocale] = useState<SupportedLocale>(locale);
   const [adminPath, setAdminPath] = useState("/admin");
   const [vncPath, setVncPath] = useState("/vnc");
   const [publicUrl, setPublicUrl] = useState("");
@@ -39,11 +40,16 @@ export function ConnectAccessTab(props: {
   };
 
   const applySettingsForm = (cfg: GatewayPersistedConfig) => {
+    setDefaultLocale(cfg.locale);
     setAdminPath(cfg.adminPath);
     setVncPath(cfg.vncPath);
     setPublicUrl(cfg.publicUrl);
     setTrustProxy(cfg.trustProxy);
   };
+
+  useEffect(() => {
+    setDefaultLocale(locale);
+  }, [locale]);
 
   useEffect(() => {
     void loadAll();
@@ -89,6 +95,7 @@ export function ConnectAccessTab(props: {
     try {
       const prevAdmin = window.location.pathname;
       const res = await gatewayApi.updateGatewaySettings({
+        locale: defaultLocale,
         adminPath,
         vncPath,
         publicUrl,
@@ -96,6 +103,7 @@ export function ConnectAccessTab(props: {
         ...(newPassword ? { newPassword } : {}),
         revokeAllSessions: Boolean(newPassword && revokeAll),
       });
+      setLocale(res.config.locale);
       setNewPassword("");
       setSavedNotice(true);
       setTimeout(() => setSavedNotice(false), 2000);
@@ -326,6 +334,17 @@ export function ConnectAccessTab(props: {
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+          <div className="sm:col-span-2 space-y-1.5">
+            <label className="block text-xs font-medium">{t.connect.defaultLocaleLabel}</label>
+            <Select
+              className="w-full"
+              value={defaultLocale}
+              onChange={(e) => setDefaultLocale(e.target.value as SupportedLocale)}
+            >
+              <option value="zh-CN">简体中文 (zh-CN)</option>
+              <option value="en-US">English (en-US)</option>
+            </Select>
+          </div>
           <div className="space-y-1.5">
             <label className="block text-xs font-medium">{t.connect.adminPathLabel}</label>
             <Input value={adminPath} onChange={(e) => setAdminPath(e.target.value)} className="font-mono" />

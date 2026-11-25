@@ -53,6 +53,8 @@ export const DesktopConfigSchema = z.object({
 export type DesktopConfig = z.infer<typeof DesktopConfigSchema>;
 
 export const WorkerEnvConfigSchema = z.object({
+  disableT3Telemetry: z.boolean().default(true),
+  disableAntigravityTelemetry: z.boolean().default(true),
   httpProxy: z.string().default(""),
   httpsProxy: z.string().default(""),
   allProxy: z.string().default(""),
@@ -140,6 +142,9 @@ export const GatewayEnvSchema = z.object({
   DESKTOP_WIDTH: emptyToUndefined(z.coerce.number().int().min(800).max(3840)),
   DESKTOP_HEIGHT: emptyToUndefined(z.coerce.number().int().min(600).max(2160)),
   DESKTOP_IDLE_MINUTES: emptyToUndefined(z.coerce.number().int().min(0).max(1440)),
+  DISABLE_TELEMETRY: booleanFromEnv,
+  DISABLE_T3_TELEMETRY: booleanFromEnv,
+  DISABLE_ANTIGRAVITY_TELEMETRY: booleanFromEnv,
   HTTP_PROXY: emptyToUndefined(z.string()),
   HTTPS_PROXY: emptyToUndefined(z.string()),
   ALL_PROXY: emptyToUndefined(z.string()),

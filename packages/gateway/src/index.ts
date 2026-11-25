@@ -41,8 +41,14 @@ async function bootstrap(): Promise<void> {
     desktopSupervisor,
   );
   const connectService = new T3ConnectService(gatewayEnv, configStore, supervisor);
-  const providerService = new ProviderToolchainService(gatewayEnv, configStore, supervisor);
+  const providerService = new ProviderToolchainService(
+    gatewayEnv,
+    configStore,
+    supervisor,
+    desktopSupervisor,
+  );
   await providerService.init();
+  await desktopSupervisor.syncLocaleFromGateway(configStore.get().locale).catch(() => undefined);
 
   // 4. Build and listen on unified gateway port
   const app = await buildGatewayApp({

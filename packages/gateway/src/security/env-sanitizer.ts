@@ -98,6 +98,26 @@ export function buildCleanWorkerEnv(input: {
     result.no_proxy = input.workerEnv.noProxy;
   }
 
+  if (input.workerEnv.disableT3Telemetry !== false) {
+    result.T3CODE_TELEMETRY_ENABLED = "false";
+    result.T3CODE_OTEL_SDK_DISABLED = "true";
+    result.DO_NOT_TRACK = "1";
+  } else {
+    result.T3CODE_TELEMETRY_ENABLED = "true";
+    delete result.T3CODE_OTEL_SDK_DISABLED;
+    delete result.DO_NOT_TRACK;
+  }
+
+  if (input.workerEnv.disableAntigravityTelemetry !== false) {
+    result.GEMINI_TELEMETRY_ENABLED = "false";
+    result.OTEL_SDK_DISABLED = "true";
+    result.AGY_TELEMETRY_DISABLED = "1";
+  } else {
+    delete result.GEMINI_TELEMETRY_ENABLED;
+    delete result.OTEL_SDK_DISABLED;
+    delete result.AGY_TELEMETRY_DISABLED;
+  }
+
   for (const [customKey, customVal] of Object.entries(input.workerEnv.customVars)) {
     if (!FORBIDDEN_CHILD_ENV_KEYS.has(customKey) && !customKey.startsWith("T3GW_")) {
       result[customKey] = customVal;

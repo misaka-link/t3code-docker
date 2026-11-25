@@ -8,10 +8,19 @@ const DICTS: Record<SupportedLocale, TranslationDict> = {
   "en-US": enUS,
 };
 
-function syncBrowserT3ClientLanguage(locale: SupportedLocale): void {
+export function syncBrowserT3ClientLanguage(bcp47Locale: string): void {
   try {
     const key = "t3code:client-settings:v1";
-    const targetLang = locale === "zh-CN" ? "zh" : "en";
+    const lower = bcp47Locale.trim().toLowerCase();
+    let targetLang = "en";
+    if (lower.startsWith("zh")) targetLang = "zh";
+    else if (lower.startsWith("ja")) targetLang = "ja";
+    else if (lower.startsWith("ko")) targetLang = "ko";
+    else if (lower.startsWith("es")) targetLang = "es";
+    else if (lower.startsWith("fr")) targetLang = "fr";
+    else if (lower.startsWith("de")) targetLang = "de";
+    else if (lower === "pt-br" || lower === "pt_br") targetLang = "pt-BR";
+
     const raw = localStorage.getItem(key);
     let parsed: Record<string, unknown> = {};
     if (raw) {
@@ -39,12 +48,12 @@ const UiPreferencesContext = createContext<UiPreferencesContextValue | null>(nul
 
 export function UiPreferencesProvider(props: {
   readonly initialLocale?: SupportedLocale;
+  readonly effectiveAppLocale?: string;
+  readonly setupRequired?: boolean;
   readonly initialTheme?: ThemeMode;
   readonly children: ReactNode;
 }) {
   const [locale, setLocaleState] = useState<SupportedLocale>(() => {
-    const saved = localStorage.getItem("t3gw_locale");
-    if (saved === "zh-CN" || saved === "en-US") return saved;
     return props.initialLocale ?? DEFAULT_LOCALE;
   });
 
@@ -55,9 +64,18 @@ export function UiPreferencesProvider(props: {
   });
 
   useEffect(() => {
+    if (props.setupRequired === false && props.initialLocale) {
+      setLocaleState(props.initialLocale);
+      localStorage.setItem("t3gw_locale", props.initialLocale);
+    }
+  }, [props.setupRequired, props.initialLocale]);
+
+  useEffect(() => {
     document.documentElement.lang = locale;
-    syncBrowserT3ClientLanguage(locale);
-  }, [locale]);
+    const targetAppLocale =
+      props.setupRequired === false && props.effectiveAppLocale ? props.effectiveAppLocale : locale;
+    syncBrowserT3ClientLanguage(targetAppLocale);
+  }, [locale, props.setupRequired, props.effectiveAppLocale]);
 
   useEffect(() => {
     const root = document.documentElement;

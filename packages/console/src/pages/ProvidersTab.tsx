@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Cpu, Download, RefreshCw, Trash2 } from "lucide-react";
+import { Cpu, Download, RefreshCw, ShieldAlert, Trash2 } from "lucide-react";
 import type { ProvidersOverview } from "@t3-docker/shared";
 import { useUiPreferences } from "../i18n/context";
 import { gatewayApi } from "../lib/api";
@@ -83,6 +83,50 @@ export function ProvidersTab(props: { readonly desktopSupported: boolean }) {
           {error}
         </div>
       )}
+
+      {/* 0. Privacy & Telemetry Controls (T3 Code & Antigravity) */}
+      <section className="t3-card p-5 space-y-3.5">
+        <div className="flex items-center gap-2">
+          <ShieldAlert className="h-4 w-4 text-[var(--muted-foreground)]" />
+          <h3 className="text-sm font-semibold">{t.providers.telemetryTitle}</h3>
+        </div>
+
+        <div className="flex items-center justify-between gap-4">
+          <span className="text-xs text-[var(--muted-foreground)] leading-relaxed">
+            {t.providers.disableT3TelemetryLabel}
+          </span>
+          <Switch
+            checked={data ? data.workerEnv.disableT3Telemetry : true}
+            onChange={(val) => {
+              if (!data) return;
+              void gatewayApi
+                .updateWorkerEnv({ ...data.workerEnv, disableT3Telemetry: val }, true)
+                .then(setData)
+                .catch((err) => setError(err instanceof Error ? err.message : t.common.error));
+            }}
+          />
+        </div>
+
+        <div className="flex items-center justify-between gap-4 pt-2 border-t border-[var(--border)]">
+          <span className="text-xs text-[var(--muted-foreground)] leading-relaxed">
+            {t.providers.disableAgyTelemetryLabel}
+          </span>
+          <Switch
+            checked={data ? data.workerEnv.disableAntigravityTelemetry : true}
+            onChange={(val) => {
+              if (!data) return;
+              void gatewayApi
+                .updateWorkerEnv({ ...data.workerEnv, disableAntigravityTelemetry: val }, true)
+                .then(setData)
+                .catch((err) => setError(err instanceof Error ? err.message : t.common.error));
+            }}
+          />
+        </div>
+
+        <p className="text-[11px] text-[var(--muted-foreground)] leading-relaxed pt-1">
+          {t.providers.agyAccountTelemetryHint}
+        </p>
+      </section>
 
       {/* 1. Zero-Injection Dual-Track Browser MCP */}
       <section className="t3-card p-5 space-y-3.5">

@@ -58,18 +58,10 @@ export const gatewayApi = {
       body: JSON.stringify(input),
     }),
 
-  login: (
-    password: string,
-    locale?: "zh-CN" | "en-US",
-    theme?: "dark" | "light" | "system",
-  ) =>
+  login: (password: string) =>
     requestJson<{ ok: boolean }>("/auth/login", {
       method: "POST",
-      body: JSON.stringify({
-        password,
-        ...(locale ? { locale } : {}),
-        ...(theme ? { theme } : {}),
-      }),
+      body: JSON.stringify({ password }),
     }),
 
   logout: () => requestJson<{ ok: boolean }>("/auth/logout", { method: "POST" }),

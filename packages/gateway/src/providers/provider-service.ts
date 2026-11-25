@@ -9,6 +9,7 @@ import {
   type WorkerEnvConfig,
 } from "@t3-docker/shared";
 import type { ConfigStore } from "../config/config-store.js";
+import type { DesktopSupervisor } from "../desktop/desktop-supervisor.js";
 import type { T3ProcessSupervisor } from "../supervisor/t3-supervisor.js";
 import { fileExists, writeFileAtomic } from "../utils/atomic-fs.js";
 import { runWorkerCommand } from "../utils/cli-runner.js";
@@ -23,6 +24,7 @@ export class ProviderToolchainService {
     private readonly gatewayEnv: GatewayEnv,
     private readonly configStore: ConfigStore,
     private readonly supervisor: T3ProcessSupervisor,
+    private readonly desktopSupervisor?: DesktopSupervisor,
   ) {
     this.desktopWakeTokenPath = path.join(gatewayEnv.T3CODE_HOME, ".desktop-mcp-token");
   }
@@ -32,6 +34,11 @@ export class ProviderToolchainService {
     await writeFileAtomic(this.desktopWakeTokenPath, `${this.desktopWakeToken}\n`, 0o644).catch(
       () => undefined,
     );
+    const wEnv = this.configStore.get().workerEnv;
+    await this.syncTelemetrySettings(
+      wEnv.disableT3Telemetry,
+      wEnv.disableAntigravityTelemetry,
+    ).catch(() => undefined);
   }
 
   public verifyDesktopWakeToken(presented: string | undefined): boolean {
@@ -174,11 +181,105 @@ export class ProviderToolchainService {
     workerEnv: WorkerEnvConfig,
     restartServer: boolean,
   ): Promise<ProvidersOverview> {
+    const prevEnv = this.configStore.get().workerEnv;
+    const telemetryChanged =
+      prevEnv.disableT3Telemetry !== workerEnv.disableT3Telemetry ||
+      prevEnv.disableAntigravityTelemetry !== workerEnv.disableAntigravityTelemetry;
+
     await this.configStore.update({ workerEnv });
+    await this.syncTelemetrySettings(
+      workerEnv.disableT3Telemetry,
+      workerEnv.disableAntigravityTelemetry,
+    ).catch(() => undefined);
+
     if (restartServer && this.supervisor.getState() === "healthy") {
       await this.supervisor.restart();
     }
+    if (
+      telemetryChanged &&
+      this.desktopSupervisor?.supported &&
+      this.desktopSupervisor.getState() === "running"
+    ) {
+      await this.desktopSupervisor.restart().catch(() => undefined);
+    }
     return this.getOverview();
+  }
+
+  /**
+   * Synchronizes both T3 Code's Linux managed policy (`/etc/t3code/policy.json`, covering Server,
+   * VNC Desktop, and connected WebUI browsers) and Antigravity CLI/ACP feedback survey settings.
+   */
+  public async syncTelemetrySettings(
+    disableT3Telemetry: boolean,
+    disableAntigravityTelemetry: boolean,
+  ): Promise<void> {
+    if (process.platform === "linux") {
+      const policyDir = "/etc/t3code";
+      const policyFile = "/etc/t3code/policy.json";
+      try {
+        if (disableT3Telemetry) {
+          await fs.mkdir(policyDir, { recursive: true, mode: 0o755 });
+          const policyDoc = {
+            schemaVersion: 1,
+            organization: "T3 Docker Gateway",
+            limits: {
+              telemetry: false,
+            },
+          };
+          await writeFileAtomic(policyFile, `${JSON.stringify(policyDoc, null, 2)}\n`, 0o644);
+        } else if (await fileExists(policyFile)) {
+          const existingRaw = await fs.readFile(policyFile, "utf8").catch(() => "");
+          if (existingRaw.includes('"T3 Docker Gateway"')) {
+            await fs.rm(policyFile, { force: true });
+          }
+        }
+      } catch {
+        // Non-root test environments can safely ignore /etc/t3code write errors
+      }
+    }
+
+    const script = [
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      "const disable = process.argv[1] === '1';",
+      "const coderHome = process.argv[2];",
+      "const t3Home = process.argv[3];",
+      "const targets = [path.join(coderHome, '.gemini', 'antigravity-cli', 'settings.json')];",
+      "const agyProfilesRoot = path.join(t3Home, 'userdata', 'providers', 'antigravity');",
+      "try {",
+      "  for (const entry of fs.readdirSync(agyProfilesRoot, { withFileTypes: true })) {",
+      "    if (entry.isDirectory()) {",
+      "      targets.push(path.join(agyProfilesRoot, entry.name, 'antigravity-cli', 'settings.json'));",
+      "    }",
+      "  }",
+      "} catch {}",
+      "for (const file of targets) {",
+      "  try {",
+      "    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });",
+      "    let doc = {};",
+      "    try { doc = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}",
+      "    if (!doc || typeof doc !== 'object' || Array.isArray(doc)) doc = {};",
+      "    doc.showFeedbackSurvey = !disable;",
+      "    const tmp = file + '.tmp';",
+      "    fs.writeFileSync(tmp, JSON.stringify(doc, null, 2) + '\\n', { mode: 0o600 });",
+      "    fs.renameSync(tmp, file);",
+      "  } catch {}",
+      "}",
+    ].join("\n");
+
+    await runWorkerCommand({
+      command: "node",
+      args: [
+        "-e",
+        script,
+        disableAntigravityTelemetry ? "1" : "0",
+        this.gatewayEnv.CODER_HOME,
+        this.gatewayEnv.T3CODE_HOME,
+      ],
+      gatewayEnv: this.gatewayEnv,
+      workerEnv: this.configStore.get().workerEnv,
+      timeoutMs: 5_000,
+    }).catch(() => undefined);
   }
 
   /**
