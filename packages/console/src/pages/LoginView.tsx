@@ -5,7 +5,7 @@ import { gatewayApi } from "../lib/api";
 import { Badge, Button, Input, TopLocaleThemeControls } from "../components/ui";
 
 export function LoginView(props: { readonly onLoggedIn: () => Promise<void> }) {
-  const { t } = useUiPreferences();
+  const { t, locale, theme } = useUiPreferences();
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -16,7 +16,7 @@ export function LoginView(props: { readonly onLoggedIn: () => Promise<void> }) {
     setError(null);
     setSubmitting(true);
     try {
-      await gatewayApi.login(password);
+      await gatewayApi.login(password, locale, theme);
       await props.onLoggedIn();
     } catch (err) {
       setError(err instanceof Error ? err.message : t.common.error);

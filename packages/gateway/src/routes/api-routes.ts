@@ -132,7 +132,8 @@ export function registerGatewayApiRoutes(app: FastifyInstance, services: Gateway
       return reply.code(403).send({ ok: false, error: "CAPABILITY_UNAVAILABLE" });
     }
     const status = await desktopSupervisor.start();
-    return { ok: true, status };
+    await desktopSupervisor.launchChromiumBrowser().catch(() => undefined);
+    return { ok: true, status: desktopSupervisor.getStatus() };
   });
 
   // Public bootstrap metadata for Setup / Login / Console UI
@@ -169,6 +170,7 @@ export function registerGatewayApiRoutes(app: FastifyInstance, services: Gateway
         ...(body.theme ? { theme: body.theme } : {}),
       });
     }
+    await desktopSupervisor.syncLocaleFromGateway(configStore.get().locale);
     const issued = authService.issueSessionToken();
     reply.setCookie(GATEWAY_SESSION_COOKIE, issued.token, {
       path: "/",
@@ -209,12 +211,23 @@ export function registerGatewayApiRoutes(app: FastifyInstance, services: Gateway
       return reply.code(401).send({ ok: false, code: "INVALID_PASSWORD", error: "Invalid access code." });
     }
 
+    if (body.locale || body.theme) {
+      await configStore.update({
+        ...(body.locale ? { locale: body.locale } : {}),
+        ...(body.theme ? { theme: body.theme } : {}),
+      });
+    }
+    if (body.locale) {
+      await desktopSupervisor.syncLocaleFromGateway(body.locale);
+    }
+
+    const updatedCfg = configStore.get();
     const issued = authService.issueSessionToken();
     reply.setCookie(GATEWAY_SESSION_COOKIE, issued.token, {
       path: "/",
       httpOnly: true,
       sameSite: "lax",
-      secure: isSecureRequest(req, cfg.trustProxy),
+      secure: isSecureRequest(req, updatedCfg.trustProxy),
       maxAge: issued.maxAgeSeconds,
     });
     return { ok: true };
@@ -399,8 +412,8 @@ export function registerGatewayApiRoutes(app: FastifyInstance, services: Gateway
       });
     }
 
-    if (body.locale && desktopSupervisor.supported && desktopSupervisor.getState() === "running") {
-      void desktopSupervisor.restart().catch(() => undefined);
+    if (body.locale) {
+      await desktopSupervisor.syncLocaleFromGateway(body.locale);
     }
 
     return { ok: true, config: updated };

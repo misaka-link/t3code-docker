@@ -8,6 +8,25 @@ const DICTS: Record<SupportedLocale, TranslationDict> = {
   "en-US": enUS,
 };
 
+function syncBrowserT3ClientLanguage(locale: SupportedLocale): void {
+  try {
+    const key = "t3code:client-settings:v1";
+    const targetLang = locale === "zh-CN" ? "zh" : "en";
+    const raw = localStorage.getItem(key);
+    let parsed: Record<string, unknown> = {};
+    if (raw) {
+      const candidate: unknown = JSON.parse(raw);
+      if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+        parsed = candidate as Record<string, unknown>;
+      }
+    }
+    if (parsed.language === targetLang) return;
+    localStorage.setItem(key, JSON.stringify({ ...parsed, language: targetLang }));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
 interface UiPreferencesContextValue {
   readonly locale: SupportedLocale;
   readonly t: TranslationDict;
@@ -37,6 +56,7 @@ export function UiPreferencesProvider(props: {
 
   useEffect(() => {
     document.documentElement.lang = locale;
+    syncBrowserT3ClientLanguage(locale);
   }, [locale]);
 
   useEffect(() => {

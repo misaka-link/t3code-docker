@@ -149,12 +149,17 @@ export class T3AuthBridge {
   public async ensureVncDesktopPairingAppLink(
     loopbackUpstreamUrl: string,
   ): Promise<string | null> {
+    const catalogPath = path.join(
+      this.gatewayEnv.T3CODE_HOME,
+      "userdata",
+      "connection-catalog.json",
+    );
     const savedEnvPath = path.join(
       this.gatewayEnv.T3CODE_HOME,
       "userdata",
       "saved-environments.json",
     );
-    const hasSavedFile = await fileExists(savedEnvPath);
+    const hasSavedFile = (await fileExists(catalogPath)) || (await fileExists(savedEnvPath));
     const sessions = await this.listSessions();
     const activeDesktopSessions = sessions.filter((s) => s.label === VNC_DESKTOP_SESSION_LABEL);
 
@@ -240,22 +245,28 @@ export class T3AuthBridge {
     const res = await this.execAuth(["session", "list", "--base-dir", this.gatewayEnv.T3CODE_HOME, "--json"]);
     if (res.code !== 0) return [];
     const parsed = parseJsonFromCliStdout<unknown>(res.stdout);
-    if (Array.isArray(parsed)) return parsed as T3SessionRecord[];
-    if (parsed && typeof parsed === "object" && Array.isArray((parsed as { sessions?: unknown }).sessions)) {
-      return (parsed as { sessions: T3SessionRecord[] }).sessions;
-    }
-    return [];
+    const items = Array.isArray(parsed)
+      ? parsed
+      : parsed && typeof parsed === "object" && Array.isArray((parsed as { sessions?: unknown }).sessions)
+        ? (parsed as { sessions: unknown[] }).sessions
+        : [];
+    return items
+      .map((item) => normalizeSessionRecord(item))
+      .filter((item): item is T3SessionRecord => item !== null);
   }
 
   public async listPairings(): Promise<T3PairingRecord[]> {
     const res = await this.execAuth(["pairing", "list", "--base-dir", this.gatewayEnv.T3CODE_HOME, "--json"]);
     if (res.code !== 0) return [];
     const parsed = parseJsonFromCliStdout<unknown>(res.stdout);
-    if (Array.isArray(parsed)) return parsed as T3PairingRecord[];
-    if (parsed && typeof parsed === "object" && Array.isArray((parsed as { pairings?: unknown }).pairings)) {
-      return (parsed as { pairings: T3PairingRecord[] }).pairings;
-    }
-    return [];
+    const items = Array.isArray(parsed)
+      ? parsed
+      : parsed && typeof parsed === "object" && Array.isArray((parsed as { pairings?: unknown }).pairings)
+        ? (parsed as { pairings: unknown[] }).pairings
+        : [];
+    return items
+      .map((item) => normalizePairingRecord(item))
+      .filter((item): item is T3PairingRecord => item !== null);
   }
 
   public async revokeSession(sessionId: string): Promise<boolean> {
@@ -315,7 +326,11 @@ export class T3AuthBridge {
     }
 
     const parsed = parseJsonFromCliStdout<Record<string, unknown>>(res.stdout);
-    const id = typeof parsed?.id === "string" ? parsed.id : undefined;
+    const id =
+      (typeof parsed?.id === "string" && parsed.id) ||
+      (typeof parsed?.pairingId === "string" && parsed.pairingId) ||
+      (typeof parsed?.credentialId === "string" && parsed.credentialId) ||
+      undefined;
     const rawUrl =
       (typeof parsed?.pairUrl === "string" && parsed.pairUrl) ||
       (typeof parsed?.url === "string" && parsed.url) ||
@@ -367,4 +382,71 @@ export class T3AuthBridge {
       timeoutMs: 15_000,
     });
   }
+}
+
+function normalizeSessionRecord(raw: unknown): T3SessionRecord | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const id =
+    (typeof obj.id === "string" && obj.id) ||
+    (typeof obj.sessionId === "string" && obj.sessionId) ||
+    "";
+  if (!id) return null;
+  const client =
+    obj.client && typeof obj.client === "object"
+      ? (obj.client as Record<string, unknown>)
+      : undefined;
+  const label =
+    (typeof obj.label === "string" && obj.label) ||
+    (typeof client?.label === "string" && client.label) ||
+    undefined;
+  const subject = typeof obj.subject === "string" ? obj.subject : undefined;
+  const createdAt =
+    (typeof obj.createdAt === "string" && obj.createdAt) ||
+    (typeof obj.issuedAt === "string" && obj.issuedAt) ||
+    undefined;
+  const expiresAt = typeof obj.expiresAt === "string" ? obj.expiresAt : undefined;
+  return {
+    id,
+    ...(label ? { label } : {}),
+    ...(subject ? { subject } : {}),
+    ...(createdAt ? { createdAt } : {}),
+    ...(expiresAt ? { expiresAt } : {}),
+  };
+}
+
+function normalizePairingRecord(raw: unknown): T3PairingRecord | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const id =
+    (typeof obj.id === "string" && obj.id) ||
+    (typeof obj.pairingId === "string" && obj.pairingId) ||
+    (typeof obj.credentialId === "string" && obj.credentialId) ||
+    "";
+  if (!id) return null;
+  const client =
+    obj.client && typeof obj.client === "object"
+      ? (obj.client as Record<string, unknown>)
+      : undefined;
+  const label =
+    (typeof obj.label === "string" && obj.label) ||
+    (typeof client?.label === "string" && client.label) ||
+    undefined;
+  const expiresAt = typeof obj.expiresAt === "string" ? obj.expiresAt : undefined;
+  const token =
+    (typeof obj.token === "string" && obj.token) ||
+    (typeof obj.credential === "string" && obj.credential) ||
+    undefined;
+  const url =
+    (typeof obj.url === "string" && obj.url) ||
+    (typeof obj.pairUrl === "string" && obj.pairUrl) ||
+    (typeof obj.pairingUrl === "string" && obj.pairingUrl) ||
+    undefined;
+  return {
+    id,
+    ...(label ? { label } : {}),
+    ...(expiresAt ? { expiresAt } : {}),
+    ...(token ? { token } : {}),
+    ...(url ? { url } : {}),
+  };
 }

@@ -164,16 +164,18 @@ export async function buildGatewayApp(services: GatewayServices): Promise<Fastif
       .send("<!doctype html><html><body><h1>T3 Gateway Console (build console first)</h1></body></html>");
   };
 
-  // Catch-all router: dynamically dispatches adminPath, vncPath, and T3 WebUI upstream
-  app.all("/*", async (req, reply) => {
+  // Dispatch adminPath, vncPath, and T3 Code upstream in `onRequest` BEFORE Fastify parses `req.raw`
+  // so POST/PUT bodies (`/api/auth/*`, `/oauth/token`, `/mcp`, uploads) stream intact to `t3Proxy`.
+  app.addHook("onRequest", async (req, reply) => {
     const rawUrl = req.raw.url ?? "/";
     const pathname = rawUrl.split("?")[0] ?? "/";
-    const cfg = services.configStore.get();
 
-    // 1. Unknown internal `/_t3gw/*` routes -> 404
+    // 1. Let Fastify handle internal `/_t3gw/*` routes & static assets normally
     if (pathname === GATEWAY_INTERNAL_PREFIX || pathname.startsWith(`${GATEWAY_INTERNAL_PREFIX}/`)) {
-      return reply.code(404).send({ ok: false, error: "Not found" });
+      return;
     }
+
+    const cfg = services.configStore.get();
 
     // 2. Dynamic Admin Console SPA (`adminPath` & subroutes)
     if (pathname === cfg.adminPath || pathname.startsWith(`${cfg.adminPath}/`)) {
@@ -254,6 +256,10 @@ export async function buildGatewayApp(services: GatewayServices): Promise<Fastif
 
     reply.hijack();
     t3Proxy.web(req.raw, reply.raw);
+  });
+
+  app.setNotFoundHandler(async (_req, reply) => {
+    return reply.code(404).send({ ok: false, error: "Not found" });
   });
 
   // Raw HTTP Server Upgrade handler for both VNC Websockify & T3 Code WebUI WebSockets

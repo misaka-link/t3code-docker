@@ -92,6 +92,18 @@ export function buildBrowserLocaleBundle(bcp47Locale: string): BrowserLocaleBund
   };
 }
 
+export function toT3ClientLanguage(bcp47Locale: string): string {
+  const normalized = normalizeBrowserLocale(bcp47Locale) || "zh-CN";
+  if (normalized.startsWith("zh")) return "zh";
+  if (normalized.startsWith("en")) return "en";
+  if (normalized === "pt-BR") return "pt-BR";
+  const primary = normalized.split("-")[0] ?? "en";
+  if (["de", "es", "fr", "ja", "ko", "ru", "sv"].includes(primary)) {
+    return primary;
+  }
+  return "en";
+}
+
 export async function resolveEffectiveDesktopLocale(input: {
   readonly languageOverride: string;
   readonly t3HomeDir: string;

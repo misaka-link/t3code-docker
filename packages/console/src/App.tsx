@@ -36,11 +36,16 @@ function ConsoleShell(props: {
   const [routes, setRoutes] = useState(props.bootstrap.routes);
 
   const refreshSupervisor = useCallback(async () => {
+    if (typeof document !== "undefined" && document.hidden) return;
     try {
       setSupervisor(await gatewayApi.getSupervisorStatus());
     } catch {
       // Ignore
     }
+  }, []);
+
+  const handleRoutesChanged = useCallback((nextAdmin: string, nextVnc: string) => {
+    setRoutes({ adminPath: nextAdmin, vncPath: nextVnc });
   }, []);
 
   useEffect(() => {
@@ -189,11 +194,7 @@ function ConsoleShell(props: {
             <VersionsTab onVersionChanged={refreshSupervisor} />
           )}
           {activeTab === "connect" && (
-            <ConnectAccessTab
-              onRoutesChanged={(nextAdmin, nextVnc) =>
-                setRoutes({ adminPath: nextAdmin, vncPath: nextVnc })
-              }
-            />
+            <ConnectAccessTab onRoutesChanged={handleRoutesChanged} />
           )}
           {activeTab === "desktop" && props.bootstrap.capabilities.desktopSupported && (
             <DesktopTab vncPath={routes.vncPath} />

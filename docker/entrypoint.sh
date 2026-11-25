@@ -32,12 +32,26 @@ if [ "$(id -u)" = "0" ]; then
     "$T3CODE_HOME/userdata" \
     "$T3CODE_HOME/runtime/versions" \
     "$T3CODE_HOME/.staging" \
+    "$T3CODE_HOME/.keyrings" \
     "$T3GW_PROVIDERS_DIR/npm-global" \
     "$T3GW_PROVIDERS_DIR/mise" \
     "$T3GW_PROVIDERS_DIR/mise-config" \
     "$CODER_HOME/.local/bin" \
+    "$CODER_HOME/.local/share" \
     "$CODER_HOME/.config" \
     "$T3_WORKSPACE"
+
+  # Persist unlocked GNOME keyring under $T3CODE_HOME/.keyrings so T3 Desktop's encrypted
+  # connection-catalog.json and keyring secret stay paired across container recreations
+  chmod 0700 "$T3CODE_HOME/.keyrings"
+  if [ ! -f "$T3CODE_HOME/.keyrings/login.keyring" ]; then
+    printf 'login' > "$T3CODE_HOME/.keyrings/default"
+    printf '[keyring]\ndisplay-name=login\nctime=0\nmtime=0\nlock-on-idle=false\nlock-after=false\n' > "$T3CODE_HOME/.keyrings/login.keyring"
+    chmod 0600 "$T3CODE_HOME/.keyrings/default" "$T3CODE_HOME/.keyrings/login.keyring"
+  fi
+  if [ ! -e "$CODER_HOME/.local/share/keyrings" ]; then
+    ln -s "$T3CODE_HOME/.keyrings" "$CODER_HOME/.local/share/keyrings"
+  fi
 
   # 4. Seed bundled T3 Code release into persistent volume (and self-heal any broken slot launcher)
   if [ -d "/opt/t3-seed" ] && [ -f "/opt/t3-seed/.seed-version" ]; then

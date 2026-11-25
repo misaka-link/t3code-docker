@@ -14,6 +14,7 @@ import { parseDeviceCodeOutput } from "../src/connect/t3-connect-service.js";
 import {
   buildBrowserLocaleBundle,
   normalizeBrowserLocale,
+  toT3ClientLanguage,
 } from "../src/desktop/browser-locale.js";
 import { parseSha256Sums, resolveExpectedAssetName } from "../src/versions/version-hub.js";
 
@@ -40,8 +41,8 @@ describe("T3AuthBridge Zero-Duplicate Issuance & Browser Locale Sync", () => {
 
     let createCalls = 0;
     let revokedIds: string[] = [];
-    let activeSessions: Array<{ id: string; label?: string }> = [];
-    let activePairings: Array<{ id: string; label?: string }> = [];
+    let activeSessions: Array<Record<string, unknown>> = [];
+    let activePairings: Array<Record<string, unknown>> = [];
 
     const mockExecutor: CommandExecutor = {
       async runT3Auth(args) {
@@ -51,10 +52,10 @@ describe("T3AuthBridge Zero-Duplicate Issuance & Browser Locale Sync", () => {
           const id = `pair-${createCalls}`;
           const labelIdx = args.indexOf("--label");
           const label = labelIdx >= 0 ? args[labelIdx + 1] : undefined;
-          activePairings.push({ id, ...(label ? { label } : {}) });
+          activePairings.push({ credentialId: id, ...(label ? { client: { label } } : {}) });
           return {
             code: 0,
-            stdout: JSON.stringify({ id, token: `tok_${createCalls}` }),
+            stdout: JSON.stringify({ credentialId: id, credential: `tok_${createCalls}` }),
             stderr: "",
           };
         }
@@ -63,7 +64,7 @@ describe("T3AuthBridge Zero-Duplicate Issuance & Browser Locale Sync", () => {
         }
         if (args[0] === "pairing" && args[1] === "revoke") {
           revokedIds.push(args[2]!);
-          activePairings = activePairings.filter((p) => p.id !== args[2]);
+          activePairings = activePairings.filter((p) => p.credentialId !== args[2] && p.id !== args[2]);
           return { code: 0, stdout: "{}", stderr: "" };
         }
         if (args[0] === "session" && args[1] === "list") {
@@ -71,7 +72,7 @@ describe("T3AuthBridge Zero-Duplicate Issuance & Browser Locale Sync", () => {
         }
         if (args[0] === "session" && args[1] === "revoke") {
           revokedIds.push(args[2]!);
-          activeSessions = activeSessions.filter((s) => s.id !== args[2]);
+          activeSessions = activeSessions.filter((s) => s.sessionId !== args[2] && s.id !== args[2]);
           return { code: 0, stdout: "{}", stderr: "" };
         }
         return { code: 0, stdout: "[]", stderr: "" };
@@ -110,11 +111,35 @@ describe("T3AuthBridge Zero-Duplicate Issuance & Browser Locale Sync", () => {
     expect(secondImmediate).toEqual({ circuitBroken: true });
     expect(createCalls).toBe(1);
 
-    // 3. VNC Desktop session reuse: skips issuance when saved-environments.json + 1 session exist
+    // 3. VNC Desktop session reuse: skips issuance when connection-catalog.json (or legacy saved-environments.json) + 1 session exist
     const userdataDir = path.join(env.T3CODE_HOME, "userdata");
     await fs.mkdir(userdataDir, { recursive: true });
-    await fs.writeFile(path.join(userdataDir, "saved-environments.json"), "[]", "utf8");
-    activeSessions = [{ id: "sess-vnc-1", label: VNC_DESKTOP_SESSION_LABEL }];
+    await fs.writeFile(
+      path.join(userdataDir, "connection-catalog.json"),
+      JSON.stringify({ version: 1, encryptedCatalog: "dGVzdA==" }),
+      "utf8",
+    );
+    activeSessions = [
+      {
+        sessionId: "sess-vnc-1",
+        method: "dpop-access-token",
+        subject: "one-time-token",
+        client: { label: VNC_DESKTOP_SESSION_LABEL },
+        issuedAt: "2026-11-25T13:30:55.565Z",
+        expiresAt: "2027-11-25T13:30:55.565Z",
+      },
+    ];
+
+    const normalizedSessions = await bridge.listSessions();
+    expect(normalizedSessions).toEqual([
+      {
+        id: "sess-vnc-1",
+        label: VNC_DESKTOP_SESSION_LABEL,
+        subject: "one-time-token",
+        createdAt: "2026-11-25T13:30:55.565Z",
+        expiresAt: "2027-11-25T13:30:55.565Z",
+      },
+    ]);
 
     const reusedDesktopLink = await bridge.ensureVncDesktopPairingAppLink("http://127.0.0.1:3773");
     expect(reusedDesktopLink).toBeNull();
@@ -129,7 +154,7 @@ describe("T3AuthBridge Zero-Duplicate Issuance & Browser Locale Sync", () => {
     const qr3 = await bridge.getOrCreateManualPairing("https://t3.example.com", true);
     expect(qr3.url).not.toBe(qr1.url);
     expect(revokedIds).toContain("pair-2");
-    expect(activePairings.filter((p) => p.label === MANUAL_PAIRING_LABEL)).toHaveLength(1);
+    expect((await bridge.listPairings()).filter((p) => p.label === MANUAL_PAIRING_LABEL)).toHaveLength(1);
   });
 
   it("resolves Chromium --lang, --accept-lang, and Linux LANGUAGE env overrides without conflict", () => {
@@ -156,6 +181,12 @@ describe("T3AuthBridge Zero-Duplicate Issuance & Browser Locale Sync", () => {
       LANG: "en_US.UTF-8",
       LANGUAGE: "en_US:en",
     });
+
+    expect(toT3ClientLanguage("zh-CN")).toBe("zh");
+    expect(toT3ClientLanguage("zh-TW")).toBe("zh");
+    expect(toT3ClientLanguage("en-US")).toBe("en");
+    expect(toT3ClientLanguage("ja")).toBe("ja");
+    expect(toT3ClientLanguage("pt-BR")).toBe("pt-BR");
   });
 
   it("parses T3 Connect headless device-code output and SHA256SUMS accurately", () => {

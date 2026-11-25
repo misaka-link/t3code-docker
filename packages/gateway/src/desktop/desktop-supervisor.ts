@@ -6,17 +6,20 @@ import type { DesktopConfig, DesktopState, DesktopStatus, GatewayEnv } from "@t3
 import type { T3AuthBridge } from "../auth-bridge/t3-auth-bridge.js";
 import type { ConfigStore } from "../config/config-store.js";
 import { buildCleanWorkerEnv } from "../security/env-sanitizer.js";
-import { fileExists, writeFileAtomic } from "../utils/atomic-fs.js";
-import { wrapPrivilegeDrop } from "../utils/cli-runner.js";
-import { resolveEffectiveDesktopLocale } from "./browser-locale.js";
+import { fileExists } from "../utils/atomic-fs.js";
+import { runWorkerCommand, wrapPrivilegeDrop } from "../utils/cli-runner.js";
+import { resolveEffectiveDesktopLocale, toT3ClientLanguage } from "./browser-locale.js";
 
 const DISPLAY_ID = ":99";
 const VNC_INTERNAL_PORT = 5900;
+const DBUS_SOCKET_PATH = "/tmp/t3-dbus-session";
+const DBUS_SESSION_ADDRESS = `unix:path=${DBUS_SOCKET_PATH}`;
 
 export class DesktopSupervisor {
   public readonly supported: boolean;
   private state: DesktopState;
   private readonly procs = new Map<string, ChildProcess>();
+  private sessionEnv: Record<string, string> = {};
   private activeConnections = 0;
   private lastActivityMs = Date.now();
   private activeLocale = "zh-CN";
@@ -126,6 +129,15 @@ export class DesktopSupervisor {
       },
     });
 
+    if (patch.idleTimeoutMinutes !== undefined) {
+      this.touchActivity();
+    }
+
+    if (patch.languageOverride !== undefined) {
+      const targetBcp47 = updated.desktop.languageOverride || updated.locale;
+      await this.syncT3ClientSettingsLanguage(targetBcp47).catch(() => undefined);
+    }
+
     if (this.supported && this.state === "running") {
       const resolutionChanged =
         updated.desktop.width !== prev.width || updated.desktop.height !== prev.height;
@@ -137,18 +149,54 @@ export class DesktopSupervisor {
     return this.getStatus();
   }
 
+  /**
+   * Synchronizes T3 Code's `userdata/client-settings.json` `language` field with the gateway/desktop
+   * locale, and restarts the running VNC desktop if its active locale differs.
+   */
+  public async syncLocaleFromGateway(gatewayLocale: "zh-CN" | "en-US"): Promise<void> {
+    const cfg = this.configStore.get().desktop;
+    const effectiveTarget = cfg.languageOverride || gatewayLocale;
+    await this.syncT3ClientSettingsLanguage(effectiveTarget).catch(() => undefined);
+
+    if (this.supported && this.state === "running" && !cfg.languageOverride) {
+      const bundle = await this.resolveCurrentLocaleBundle();
+      if (bundle.bcp47 !== this.activeLocale) {
+        await this.restart().catch(() => undefined);
+      }
+    }
+  }
+
   public async launchT3DesktopApp(): Promise<void> {
     this.assertSupported();
     if (this.state !== "running") {
       await this.start();
     }
-    if (this.procs.has("t3-desktop")) return;
+    this.touchActivity();
 
-    await this.prepareT3DesktopCoexistenceSettings();
     const binPath = await this.resolveT3DesktopBinary();
     if (!binPath) {
       throw new Error("T3 Desktop executable not found in current runtime.");
     }
+
+    if (this.procs.has("t3-desktop")) {
+      const raised = await this.focusX11Window("com.t3tools.t3code", "T3 Code");
+      if (raised) return;
+
+      // Electron process is running without a visible X11 window; trigger single-instance reveal
+      await this.runDesktopCommand(binPath, ["--no-sandbox"], 5_000).catch(() => undefined);
+      await this.delay(400);
+      if (await this.focusX11Window("com.t3tools.t3code", "T3 Code")) {
+        return;
+      }
+
+      const stale = this.procs.get("t3-desktop");
+      if (stale) {
+        this.procs.delete("t3-desktop");
+        await this.terminateProcess(stale);
+      }
+    }
+
+    await this.prepareT3DesktopCoexistenceSettings();
 
     const upstreamUrl = `http://${this.gatewayEnv.T3_UPSTREAM_HOST}:${this.gatewayEnv.T3_UPSTREAM_PORT}`;
     const pairingLink = await this.authBridge
@@ -156,23 +204,41 @@ export class DesktopSupervisor {
       .catch(() => null);
 
     const localeBundle = await this.resolveCurrentLocaleBundle();
+    // Use gnome-libsecret (unlocked via session D-Bus + gnome-keyring-daemon) so Electron's
+    // safeStorage.isEncryptionAvailable() is true and T3 Desktop persists connection-catalog.json.
     const args = [
       "--no-sandbox",
       "--disable-dev-shm-usage",
-      "--password-store=basic",
+      "--password-store=gnome-libsecret",
       ...localeBundle.chromiumArgs,
       ...(pairingLink ? [pairingLink] : []),
     ];
 
     this.spawnManagedProcess("t3-desktop", binPath, args, localeBundle.envOverrides);
+    await this.waitForAndFocusWindow("com.t3tools.t3code", "T3 Code", 4_000);
   }
 
-  public async launchChromiumBrowser(): Promise<void> {
+  public async launchChromiumBrowser(focusWindow = true): Promise<void> {
     this.assertSupported();
     if (this.state !== "running") {
       await this.start();
     }
-    if (this.procs.has("chromium")) return;
+    this.touchActivity();
+
+    if (this.procs.has("chromium")) {
+      const hasWindow = await this.hasX11Window("Chromium", "Chromium");
+      if (hasWindow) {
+        if (focusWindow) {
+          await this.focusX11Window("Chromium", "Chromium");
+        }
+        return;
+      }
+      const stale = this.procs.get("chromium");
+      if (stale) {
+        this.procs.delete("chromium");
+        await this.terminateProcess(stale);
+      }
+    }
 
     const cfg = this.configStore.get().desktop;
     const localeBundle = await this.resolveCurrentLocaleBundle();
@@ -182,6 +248,7 @@ export class DesktopSupervisor {
 
     const args = [
       "--no-sandbox",
+      "--test-type",
       "--disable-dev-shm-usage",
       "--password-store=basic",
       "--no-first-run",
@@ -196,6 +263,9 @@ export class DesktopSupervisor {
     ];
 
     this.spawnManagedProcess("chromium", "chromium", args, localeBundle.envOverrides);
+    if (focusWindow) {
+      await this.waitForAndFocusWindow("Chromium", "Chromium", 3_500);
+    }
   }
 
   public async shutdown(): Promise<void> {
@@ -217,6 +287,9 @@ export class DesktopSupervisor {
 
     try {
       await fs.rm("/tmp/.X99-lock", { force: true }).catch(() => undefined);
+      await fs.rm(DBUS_SOCKET_PATH, { force: true }).catch(() => undefined);
+
+      await this.startSecretServiceSession(localeBundle.envOverrides);
 
       this.spawnManagedProcess(
         "xvfb",
@@ -273,7 +346,7 @@ export class DesktopSupervisor {
       this.state = "running";
       this.touchActivity();
 
-      await this.launchChromiumBrowser().catch(() => undefined);
+      await this.launchChromiumBrowser(!cfg.autoStartT3Desktop).catch(() => undefined);
       if (cfg.autoStartT3Desktop) {
         await this.launchT3DesktopApp().catch(() => undefined);
       }
@@ -299,14 +372,81 @@ export class DesktopSupervisor {
       this.procs.delete(key);
       await this.terminateProcess(proc);
     }
+
+    // Stop session D-Bus & gnome-keyring-daemon cleanly so hibernate returns to 0 MB RAM
+    await this.runDesktopCommand(
+      "sh",
+      [
+        "-c",
+        "pkill -f 'gnome-keyring-daemon' 2>/dev/null || true; pkill -f '/tmp/t3-dbus-session' 2>/dev/null || true",
+      ],
+      3_000,
+    ).catch(() => undefined);
+    await fs.rm(DBUS_SOCKET_PATH, { force: true }).catch(() => undefined);
+    this.sessionEnv = {};
     this.state = "hibernated";
   }
 
   /**
-   * Ensures `desktop-settings.json` sets `localEnvironmentEnabled: false` so T3 Desktop
-   * attaches cleanly as a GUI client to the running `t3 serve` without fighting over SQLite locks.
+   * Starts a session D-Bus bus and unlocks a passwordless GNOME login keyring as `coder`
+   * so Electron's `safeStorage` (`gnome_libsecret`) works out-of-the-box without GUI password prompts.
+   */
+  private async startSecretServiceSession(
+    localeEnv: Readonly<Record<string, string>>,
+  ): Promise<void> {
+    this.sessionEnv = {};
+    const setupScript = [
+      "set -e",
+      `keyrings_target="${this.gatewayEnv.T3CODE_HOME}/.keyrings"`,
+      `keyrings_link="${this.gatewayEnv.CODER_HOME}/.local/share/keyrings"`,
+      'mkdir -p -m 0700 "$keyrings_target" "$(dirname "$keyrings_link")"',
+      'if [ ! -f "$keyrings_target/login.keyring" ]; then',
+      '  printf "login" > "$keyrings_target/default"',
+      '  printf "[keyring]\\ndisplay-name=login\\nctime=0\\nmtime=0\\nlock-on-idle=false\\nlock-after=false\\n" > "$keyrings_target/login.keyring"',
+      '  chmod 0600 "$keyrings_target/default" "$keyrings_target/login.keyring"',
+      "fi",
+      'if [ ! -e "$keyrings_link" ]; then ln -s "$keyrings_target" "$keyrings_link"; fi',
+      "if command -v dbus-daemon >/dev/null 2>&1; then",
+      `  dbus-daemon --session --address="${DBUS_SESSION_ADDRESS}" --fork`,
+      `  export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_ADDRESS}"`,
+      "  if command -v gnome-keyring-daemon >/dev/null 2>&1; then",
+      "    printf '' | gnome-keyring-daemon --unlock --components=secrets || true",
+      "  fi",
+      "fi",
+    ].join("\n");
+
+    const res = await runWorkerCommand({
+      command: "sh",
+      args: ["-c", setupScript],
+      gatewayEnv: this.gatewayEnv,
+      workerEnv: this.configStore.get().workerEnv,
+      extraEnv: {
+        ...localeEnv,
+      },
+      timeoutMs: 8_000,
+    }).catch(() => ({ code: 1, stdout: "", stderr: "" }));
+
+    if (await fileExists(DBUS_SOCKET_PATH)) {
+      const envMap: Record<string, string> = {
+        DBUS_SESSION_BUS_ADDRESS: DBUS_SESSION_ADDRESS,
+      };
+      for (const line of res.stdout.split(/\r?\n/)) {
+        const trimmed = line.trim().replace(/^export\s+/, "");
+        if (trimmed.startsWith("GNOME_KEYRING_CONTROL=")) {
+          const val = trimmed.slice("GNOME_KEYRING_CONTROL=".length).replace(/^['"]|['"]$/g, "");
+          if (val) envMap.GNOME_KEYRING_CONTROL = val;
+        }
+      }
+      this.sessionEnv = envMap;
+    }
+  }
+
+  /**
+   * Ensures `desktop-settings.json` sets `localEnvironmentEnabled: false`, `linuxPasswordStore: "gnome-libsecret"`,
+   * and defaults to a maximized window on first launch so T3 Desktop attaches cleanly and fills the VNC viewport.
    */
   private async prepareT3DesktopCoexistenceSettings(): Promise<void> {
+    const cfg = this.configStore.get().desktop;
     const settingsPath = path.join(
       this.gatewayEnv.T3CODE_HOME,
       "userdata",
@@ -323,14 +463,155 @@ export class DesktopSupervisor {
       existing = {};
     }
 
-    if (existing.localEnvironmentEnabled === false) {
+    const firstWindowInit =
+      existing.mainWindowMaximized === undefined && existing.mainWindowBounds === undefined;
+
+    const merged: Record<string, unknown> = {
+      ...existing,
+      localEnvironmentEnabled: false,
+      linuxPasswordStore: "gnome-libsecret",
+      ...(firstWindowInit
+        ? {
+            mainWindowMaximized: true,
+            mainWindowBounds: {
+              x: 0,
+              y: 0,
+              width: cfg.width,
+              height: cfg.height,
+            },
+          }
+        : {}),
+    };
+
+    const payload = `${JSON.stringify(merged, null, 2)}\n`;
+    await runWorkerCommand({
+      command: "node",
+      args: [
+        "-e",
+        "const fs=require('node:fs'),p=process.argv[1],tmp=p+'.tmp';fs.writeFileSync(tmp,process.argv[2],{mode:0o644});fs.renameSync(tmp,p);",
+        settingsPath,
+        payload,
+      ],
+      gatewayEnv: this.gatewayEnv,
+      workerEnv: this.configStore.get().workerEnv,
+      timeoutMs: 5_000,
+    });
+
+    // Seed client-settings.json on first boot so T3 Desktop matches gateway/override language out-of-the-box
+    const clientSettingsPath = path.join(
+      this.gatewayEnv.T3CODE_HOME,
+      "userdata",
+      "client-settings.json",
+    );
+    if (!(await fileExists(clientSettingsPath))) {
+      const fullCfg = this.configStore.get();
+      await this.syncT3ClientSettingsLanguage(
+        fullCfg.desktop.languageOverride || fullCfg.locale,
+      ).catch(() => undefined);
+    }
+  }
+
+  public async syncT3ClientSettingsLanguage(bcp47Locale: string): Promise<void> {
+    const clientSettingsPath = path.join(
+      this.gatewayEnv.T3CODE_HOME,
+      "userdata",
+      "client-settings.json",
+    );
+    const targetLang = toT3ClientLanguage(bcp47Locale);
+    let existing: Record<string, unknown> = {};
+    try {
+      const raw = await fs.readFile(clientSettingsPath, "utf8");
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const record = parsed as Record<string, unknown>;
+        existing =
+          record.settings && typeof record.settings === "object" && !Array.isArray(record.settings)
+            ? (record.settings as Record<string, unknown>)
+            : record;
+      }
+    } catch {
+      existing = {};
+    }
+
+    if (existing.language === targetLang) {
       return;
     }
     const merged = {
       ...existing,
-      localEnvironmentEnabled: false,
+      language: targetLang,
     };
-    await writeFileAtomic(settingsPath, `${JSON.stringify(merged, null, 2)}\n`, 0o644);
+    const payload = `${JSON.stringify(merged, null, 2)}\n`;
+    await runWorkerCommand({
+      command: "node",
+      args: [
+        "-e",
+        "const fs=require('node:fs'),path=require('node:path'),p=process.argv[1],tmp=p+'.tmp';fs.mkdirSync(path.dirname(p),{recursive:true});fs.writeFileSync(tmp,process.argv[2],{mode:0o644});fs.renameSync(tmp,p);",
+        clientSettingsPath,
+        payload,
+      ],
+      gatewayEnv: this.gatewayEnv,
+      workerEnv: this.configStore.get().workerEnv,
+      timeoutMs: 5_000,
+    });
+  }
+
+  private async hasX11Window(wmClassHint: string, titleHint: string): Promise<boolean> {
+    const res = await this.runDesktopCommand("wmctrl", ["-lx"], 2_500).catch(() => null);
+    if (!res || res.code !== 0) return false;
+    const lowerClass = wmClassHint.toLowerCase();
+    const lowerTitle = titleHint.toLowerCase();
+    return res.stdout
+      .split(/\r?\n/)
+      .some((line) => {
+        const lower = line.toLowerCase();
+        return lower.includes(lowerClass) || lower.includes(lowerTitle);
+      });
+  }
+
+  private async focusX11Window(wmClassHint: string, titleHint: string): Promise<boolean> {
+    const hasWin = await this.hasX11Window(wmClassHint, titleHint);
+    if (!hasWin) return false;
+    await this.runDesktopCommand(
+      "sh",
+      [
+        "-c",
+        `wmctrl -x -r "${wmClassHint}" -b remove,hidden 2>/dev/null || true; wmctrl -x -a "${wmClassHint}" 2>/dev/null || wmctrl -a "${titleHint}" 2>/dev/null || true`,
+      ],
+      2_500,
+    ).catch(() => undefined);
+    return true;
+  }
+
+  private async waitForAndFocusWindow(
+    wmClassHint: string,
+    titleHint: string,
+    timeoutMs: number,
+  ): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (await this.focusX11Window(wmClassHint, titleHint)) {
+        return;
+      }
+      await this.delay(250);
+    }
+  }
+
+  private async runDesktopCommand(
+    command: string,
+    args: readonly string[],
+    timeoutMs: number,
+  ): Promise<{ code: number; stdout: string; stderr: string }> {
+    return runWorkerCommand({
+      command,
+      args,
+      gatewayEnv: this.gatewayEnv,
+      workerEnv: this.configStore.get().workerEnv,
+      extraEnv: {
+        DISPLAY: DISPLAY_ID,
+        ...this.sessionEnv,
+      },
+      timeoutMs,
+    });
   }
 
   private async resolveT3DesktopBinary(): Promise<string | null> {
@@ -374,7 +655,8 @@ export class DesktopSupervisor {
       workerEnv: this.configStore.get().workerEnv,
       extraEnv: {
         DISPLAY: DISPLAY_ID,
-        XDG_CURRENT_DESKTOP: "LXQt",
+        XDG_CURRENT_DESKTOP: "GNOME",
+        ...this.sessionEnv,
         ...localeEnv,
       },
     });

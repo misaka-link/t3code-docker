@@ -58,6 +58,8 @@ export type SetupRequest = z.infer<typeof SetupRequestSchema>;
 
 export const LoginRequestSchema = z.object({
   password: z.string().min(1).max(128),
+  locale: z.enum(SUPPORTED_LOCALES).optional(),
+  theme: z.enum(THEME_MODES).optional(),
 });
 export type LoginRequest = z.infer<typeof LoginRequestSchema>;
 

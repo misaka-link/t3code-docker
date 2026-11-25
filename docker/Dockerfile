@@ -189,12 +189,15 @@ ARG T3_VERSION=""
 ENV T3GW_VARIANT=full
 LABEL org.opencontainers.image.variant="full"
 
-# 1. Install lightweight X11/VNC stack + headed Chromium with multi-language .pak packs
+# 1. Install lightweight X11/VNC stack, unlocked Secret Service keyring & headed Chromium with multi-language .pak packs
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
       xvfb \
       openbox \
+      wmctrl \
+      dbus-x11 \
+      gnome-keyring \
       x11-utils \
       x11vnc \
       novnc \
