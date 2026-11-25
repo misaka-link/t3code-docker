@@ -108,6 +108,14 @@ export const enUS: TranslationDict = {
     installSwitchBtn: "Download & Switch",
     switchingBtn: "Verifying & Switching…",
     noInstalled: "No cached version slots found yet",
+    progressPhases: {
+      downloading: "Streaming official release package (HTTP Range auto-resume enabled)…",
+      verifying: "Verifying official cryptographic hash…",
+      extracting: "Extracting isolated runtime slot…",
+      snapshotting: "Creating pre-switch config snapshot…",
+      activating: "Restarting service & running health probe…",
+    },
+    resumeBadge: "Resume #",
   },
   connect: {
     title: "Access Control, Pairing & T3 Connect",

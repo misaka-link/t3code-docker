@@ -86,6 +86,7 @@ export const gatewayApi = {
     version: string;
     channel?: "stable" | "nightly";
     createSnapshotBeforeSwitch?: boolean;
+    async?: boolean;
   }) =>
     requestJson<VersionsOverview>("/versions/install", {
       method: "POST",

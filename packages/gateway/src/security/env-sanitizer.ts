@@ -7,6 +7,23 @@ export interface ConsumedGatewaySecrets {
   readonly initialSessionSecret?: string;
 }
 
+const LOOPBACK_NO_PROXY = ["127.0.0.1", "localhost", "::1"];
+
+export function mergeNoProxy(rawNoProxy?: string): string {
+  const parts = (rawNoProxy ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const seen = new Set(parts.map((p) => p.toLowerCase()));
+  for (const host of LOOPBACK_NO_PROXY) {
+    if (!seen.has(host)) {
+      parts.push(host);
+      seen.add(host);
+    }
+  }
+  return parts.join(",");
+}
+
 const FORBIDDEN_CHILD_ENV_KEYS = new Set([
   "NODE_ENV",
   "ELECTRON_RUN_AS_NODE",

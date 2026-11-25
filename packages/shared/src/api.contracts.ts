@@ -101,6 +101,25 @@ export const ReleaseItemSchema = z.object({
 });
 export type ReleaseItem = z.infer<typeof ReleaseItemSchema>;
 
+export const VersionSwitchPhaseEnum = z.enum([
+  "downloading",
+  "verifying",
+  "extracting",
+  "snapshotting",
+  "activating",
+]);
+export type VersionSwitchPhase = z.infer<typeof VersionSwitchPhaseEnum>;
+
+export const VersionSwitchProgressSchema = z.object({
+  targetVersion: z.string(),
+  phase: VersionSwitchPhaseEnum,
+  percent: z.number().min(0).max(100).nullable(),
+  downloadedMb: z.number().nullable(),
+  totalMb: z.number().nullable(),
+  attempt: z.number().int().min(1),
+});
+export type VersionSwitchProgress = z.infer<typeof VersionSwitchProgressSchema>;
+
 export const VersionsOverviewSchema = z.object({
   channel: z.enum(RELEASE_CHANNELS),
   activeVersion: z.string().nullable(),
@@ -115,6 +134,7 @@ export const VersionsOverviewSchema = z.object({
   remoteReleases: z.array(ReleaseItemSchema),
   updateAvailable: z.string().nullable(),
   switching: z.boolean(),
+  switchProgress: VersionSwitchProgressSchema.nullable().optional(),
   lastOperationError: z.string().nullable(),
 });
 export type VersionsOverview = z.infer<typeof VersionsOverviewSchema>;
@@ -123,6 +143,7 @@ export const InstallVersionRequestSchema = z.object({
   version: z.string().min(1).max(80),
   channel: z.enum(RELEASE_CHANNELS).optional(),
   createSnapshotBeforeSwitch: z.boolean().default(true),
+  async: z.boolean().optional(),
 });
 export type InstallVersionRequest = z.infer<typeof InstallVersionRequestSchema>;
 

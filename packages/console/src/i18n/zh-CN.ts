@@ -106,6 +106,14 @@ export const zhCN = {
     installSwitchBtn: "下载并热切换",
     switchingBtn: "正在校验并切换…",
     noInstalled: "暂无已缓存的历史版本槽位",
+    progressPhases: {
+      downloading: "正在流式下载官方安装包（支持自动断点续传）…",
+      verifying: "正在流式校验官方加密哈希签名…",
+      extracting: "正在解压隔离版本槽位…",
+      snapshotting: "正在创建切换前自动配置快照…",
+      activating: "正在平滑重启并等待健康探针验收…",
+    },
+    resumeBadge: "断点续传 #",
   },
   connect: {
     title: "访问控制、配对与 T3 Connect",

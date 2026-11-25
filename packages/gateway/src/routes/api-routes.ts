@@ -335,6 +335,12 @@ export function registerGatewayApiRoutes(app: FastifyInstance, services: Gateway
     if (body.channel) {
       await configStore.update({ releaseChannel: body.channel });
     }
+    if (body.async) {
+      return versionHub.startInstallAndSwitchVersion({
+        version: body.version,
+        createSnapshotBeforeSwitch: body.createSnapshotBeforeSwitch,
+      });
+    }
     return versionHub.installAndSwitchVersion({
       version: body.version,
       createSnapshotBeforeSwitch: body.createSnapshotBeforeSwitch,

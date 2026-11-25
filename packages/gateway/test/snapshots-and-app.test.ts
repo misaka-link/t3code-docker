@@ -1,4 +1,6 @@
+import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
+import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -17,7 +19,10 @@ import {
 import { T3ProcessSupervisor } from "../src/supervisor/t3-supervisor.js";
 import {
   VersionHubService,
+  downloadArchiveResumable,
+  formatTransferError,
   parseElectronBuilderSha512,
+  parseElectronBuilderSize,
   parseSha256Sums,
 } from "../src/versions/version-hub.js";
 
@@ -49,6 +54,87 @@ describe("Snapshot Archive Safety & Fastify Unified Gateway Integration", () => 
     expect(parseElectronBuilderSha512(latestLinuxYml, "T3-Code-0.1.12-amd64.deb")).toBe(
       "eeZAoG5Ynn2+0dv3+xADiN9ay2dfbx2T5b6oHpGVmst+A6CiMUHsNV1yGUhGRec/6cGTS/z+a+wSYkj+9xGUtg==",
     );
+    expect(parseElectronBuilderSize(latestLinuxYml, "T3-Code-0.1.12-amd64.deb")).toBe(209475484);
+
+    const undiciTerminated = new TypeError("terminated", {
+      cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }),
+    });
+    expect(formatTransferError(undiciTerminated)).toContain("UND_ERR_SOCKET: other side closed");
+    expect(formatTransferError(undiciTerminated)).not.toBe("terminated");
+  });
+
+  it("resumes interrupted downloads via HTTP 206 Range across mid-stream TCP socket drops", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "t3gw-range-"));
+    tempDirs.push(tmp);
+
+    const fullPayload = crypto.randomBytes(300 * 1024); // 300 KiB deterministic payload
+    const expectedSha = crypto.createHash("sha256").update(fullPayload).digest("hex");
+    let requestCount = 0;
+
+    const server = http.createServer((req, res) => {
+      requestCount += 1;
+      const rangeHeader = req.headers.range;
+      let start = 0;
+      if (rangeHeader) {
+        const m = /^bytes=(\d+)-/.exec(rangeHeader);
+        if (m?.[1]) start = Number.parseInt(m[1], 10);
+      }
+
+      // Drop TCP connection mid-stream on the first 2 attempts (~100 KiB per segment)
+      const sliceEnd =
+        requestCount <= 2
+          ? Math.min(fullPayload.length, start + 100 * 1024)
+          : fullPayload.length;
+
+      if (start > 0) {
+        res.writeHead(206, {
+          "Content-Type": "application/octet-stream",
+          "Accept-Ranges": "bytes",
+          "Content-Range": `bytes ${start}-${fullPayload.length - 1}/${fullPayload.length}`,
+          "Content-Length": String(fullPayload.length - start),
+        });
+      } else {
+        res.writeHead(200, {
+          "Content-Type": "application/octet-stream",
+          "Accept-Ranges": "bytes",
+          "Content-Length": String(fullPayload.length),
+        });
+      }
+
+      res.write(fullPayload.subarray(start, sliceEnd), () => {
+        if (requestCount <= 2) {
+          // Simulate abrupt cross-border TCP reset (`TypeError: terminated` in undici)
+          req.socket.destroy();
+        } else {
+          res.end();
+        }
+      });
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const addr = server.address();
+    const port = typeof addr === "object" && addr ? addr.port : 0;
+
+    try {
+      const destPath = path.join(tmp, "release-test.deb");
+      const retriesSeen: number[] = [];
+      await downloadArchiveResumable({
+        url: `http://127.0.0.1:${port}/release-test.deb`,
+        destPath,
+        expectedSizeBytes: fullPayload.length,
+        preferCurl: false,
+        chunkTimeoutMs: 5_000,
+        onRetry: ({ attempt }) => retriesSeen.push(attempt),
+      });
+
+      expect(requestCount).toBe(3);
+      expect(retriesSeen).toEqual([2, 3]);
+      const downloaded = await fs.readFile(destPath);
+      expect(downloaded.length).toBe(fullPayload.length);
+      expect(crypto.createHash("sha256").update(downloaded).digest("hex")).toBe(expectedSha);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("blocks Zip-Slip path traversal entries and creates/restores verified snapshots", async () => {
