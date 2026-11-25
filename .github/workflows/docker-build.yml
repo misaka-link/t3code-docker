@@ -84,6 +84,8 @@ jobs:
           file: docker/Dockerfile
           target: ${{ matrix.variant }}
           platforms: ${{ matrix.platform }}
+          provenance: false
+          sbom: false
           outputs: type=image,name=${{ env.REGISTRY }}/${{ steps.meta.outputs.image_lc }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.variant }}-${{ matrix.slug }}
           cache-to: type=gha,mode=max,scope=${{ matrix.variant }}-${{ matrix.slug }}
@@ -96,6 +98,8 @@ jobs:
           file: docker/Dockerfile
           target: ${{ matrix.variant }}
           platforms: ${{ matrix.platform }}
+          provenance: false
+          sbom: false
           push: false
           cache-from: type=gha,scope=${{ matrix.variant }}-${{ matrix.slug }}
 
@@ -163,13 +167,14 @@ jobs:
             HEADLESS_IMAGES="${HEADLESS_IMAGES} ${REPO_URI}@sha256:${d}"
           done
 
-          docker buildx imagetools create -t "${REPO_URI}:latest" ${FULL_IMAGES}
+          # Push headless/slim first and :latest last so GHCR displays :latest at the top of the package page
           docker buildx imagetools create -t "${REPO_URI}:headless" -t "${REPO_URI}:slim" ${HEADLESS_IMAGES}
+          docker buildx imagetools create -t "${REPO_URI}:latest" ${FULL_IMAGES}
 
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             VER="${GITHUB_REF#refs/tags/v}"
-            docker buildx imagetools create -t "${REPO_URI}:${VER}" -t "${REPO_URI}:v${VER}" ${FULL_IMAGES}
             docker buildx imagetools create -t "${REPO_URI}:${VER}-headless" -t "${REPO_URI}:v${VER}-headless" ${HEADLESS_IMAGES}
+            docker buildx imagetools create -t "${REPO_URI}:${VER}" -t "${REPO_URI}:v${VER}" ${FULL_IMAGES}
           fi
 
           docker buildx imagetools inspect "${REPO_URI}:latest"

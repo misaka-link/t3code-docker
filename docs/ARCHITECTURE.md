@@ -263,33 +263,27 @@ flowchart LR
 | `/data/snapshots` | `./data/snapshots` | `root:root (0700)` | 自动升级前备份与手动快照归档包 |
 | `/workspace` | `./workspace` | `coder:coder (0755)` | 默认 AI 研发项目代码工作区 |
 
-### 6.3 全参数单文件 `docker-compose.yml` 参考模板（免 `.env` 独立部署版）
-
-针对倾向于不拆分 `.env` 文件、希望在单一 YAML 中直观审阅和调整所有运行参数的用户，网关对所有可选项均内置了空字符串安全兜底预处理（`emptyToUndefined`），可直接单文件保存运行：
+### 6.3 全参数单文件 `docker-compose.yml` 参考模板（免 `.env`）
 
 ```yaml
 services:
   t3code:
-    # 如无需虚拟桌面与有头浏览器，可替换为 ghcr.io/misaka-link/t3code-docker:headless
-    image: ghcr.io/misaka-link/t3code-docker:latest
+    image: ghcr.io/misaka-link/t3code-docker:latest # 无桌面版改为 :headless
     container_name: t3code
     restart: unless-stopped
     init: true
     shm_size: "1gb"
     stop_grace_period: 45s
-    pids_limit: 4096
     ports:
       - "3080:3080"
     environment:
-      PROXY_HOST: "0.0.0.0"
       PROXY_PORT: "3080"
-      AUTH_TOKEN: ""               # 留空首次打开进入设密向导；填写则作为初始口令并在启动后从内存擦除
-      SESSION_SECRET: ""           # 留空自动生成 256-bit 随机签名密钥并持久化
-      ADMIN_PATH: "/admin"         # 管理控制台路径（支持后台免重启热改）
-      VNC_PATH: "/vnc"             # 虚拟桌面路径（支持后台免重启热改）
+      AUTH_TOKEN: ""               # 留空首次打开进入设密向导
+      SESSION_SECRET: ""           # 留空自动生成随机签名密钥
+      ADMIN_PATH: "/admin"         # 管理后台路径（支持热改）
+      VNC_PATH: "/vnc"             # 虚拟桌面路径（支持热改）
       DEFAULT_LOCALE: "zh-CN"      # zh-CN | en-US
       RELEASE_CHANNEL: "stable"    # stable | nightly
-      VERSIONS_MIN_FREE_MB: "1536"
       PUID: "1000"
       PGID: "1000"
       TZ: "Asia/Shanghai"
@@ -303,20 +297,10 @@ services:
       HTTPS_PROXY: ""
       ALL_PROXY: ""
       NO_PROXY: "localhost,127.0.0.1,::1"
-      T3_UPSTREAM_HOST: "127.0.0.1"
-      T3_UPSTREAM_PORT: "3773"
-      NOVNC_UPSTREAM_PORT: "6080"
     security_opt:
       - no-new-privileges:true
-    cap_drop:
-      - ALL
-    cap_add:
-      - CHOWN
-      - DAC_OVERRIDE
-      - FOWNER
-      - SETUID
-      - SETGID
-      - KILL
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]
     volumes:
       - ./data/gateway:/data/gateway
       - ./data/t3:/data/t3
@@ -324,11 +308,6 @@ services:
       - ./data/home:/home/coder
       - ./data/snapshots:/data/snapshots
       - ./workspace:/workspace
-    logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-        max-file: "3"
 ```
 
 ---
