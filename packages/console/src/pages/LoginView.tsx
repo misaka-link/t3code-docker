@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Lock, Terminal, ArrowRight } from "lucide-react";
 import { useUiPreferences } from "../i18n/context";
 import { gatewayApi } from "../lib/api";
+import { autoHydrateBrowserOnLogin } from "../lib/client-sync";
 import { Badge, Button, Input } from "../components/ui";
 
 export function LoginView(props: { readonly onLoggedIn: () => Promise<void> }) {
@@ -17,6 +18,7 @@ export function LoginView(props: { readonly onLoggedIn: () => Promise<void> }) {
     setSubmitting(true);
     try {
       await gatewayApi.login(password);
+      await autoHydrateBrowserOnLogin();
       await props.onLoggedIn();
     } catch (err) {
       setError(err instanceof Error ? err.message : t.common.error);

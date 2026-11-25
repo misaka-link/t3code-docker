@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { ShieldCheck, Terminal } from "lucide-react";
 import { useUiPreferences } from "../i18n/context";
 import { gatewayApi } from "../lib/api";
+import { autoHydrateBrowserOnLogin } from "../lib/client-sync";
 import { Badge, Button, Input, Select, TopLocaleThemeControls } from "../components/ui";
 
 export function SetupView(props: { readonly onCompleted: () => Promise<void> }) {
@@ -31,6 +32,7 @@ export function SetupView(props: { readonly onCompleted: () => Promise<void> }) 
         theme,
         ...(environmentLabel.trim() ? { environmentLabel: environmentLabel.trim() } : {}),
       });
+      await autoHydrateBrowserOnLogin();
       await props.onCompleted();
     } catch (err) {
       setError(err instanceof Error ? err.message : t.common.error);

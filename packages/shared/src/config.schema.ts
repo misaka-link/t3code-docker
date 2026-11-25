@@ -78,6 +78,7 @@ const BaseGatewayPersistedConfigSchema = z.object({
   publicUrl: z.string().default(""),
   releaseChannel: z.enum(RELEASE_CHANNELS).default("stable"),
   releaseBaseUrl: z.string().default(""),
+  autoSyncClientConfig: z.boolean().default(true),
   desktop: DesktopConfigSchema.default({}),
   workerEnv: WorkerEnvConfigSchema.default({}),
 });

@@ -10,28 +10,54 @@ import {
   wrapPrivilegeDrop,
 } from "../utils/cli-runner.js";
 
+// eslint-disable-next-line no-control-regex
+const ANSI_ESCAPE_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
+
+export function stripAnsi(input: string): string {
+  return input.replace(ANSI_ESCAPE_RE, "");
+}
+
 export function parseDeviceCodeOutput(rawText: string): {
   verificationUrl: string | null;
   userCode: string | null;
   expiresInSeconds: number | null;
   authorized: boolean;
   identity: string | null;
+  installingRelayClient: boolean;
 } {
+  const clean = stripAnsi(rawText);
+
   const urlMatch =
-    /Open this URL on a device with a browser:\s*\n\s*(https?:\/\/\S+)/i.exec(rawText) ??
-    /(https?:\/\/\S+)/i.exec(rawText);
-  const codeMatch = /Confirm this code when asked:\s*([A-Z0-9-]{4,20})/i.exec(rawText);
-  const minMatch = /expires in (\d+) min/i.exec(rawText);
-  const authorized = /✓\s*Authorized/i.test(rawText) || /Authorized as /i.test(rawText);
-  const idMatch = /Authorized as ([^\r\n]+)/i.exec(rawText);
+    /(https:\/\/accounts\.t3\.codes\/\S+)/i.exec(clean) ??
+    /(https:\/\/app\.t3\.codes\/\S+)/i.exec(clean) ??
+    /Open (?:this URL )?on [^\r\n]*:\s*\r?\n\s*(https?:\/\/\S+)/i.exec(clean);
+
+  const codeMatch =
+    /^\s*Code:\s*([A-Z0-9]{4}-[A-Z0-9]{4}|[A-Z0-9-]{4,20})\s*$/im.exec(clean) ??
+    /Confirm this code when asked:\s*([A-Z0-9-]{4,20})/i.exec(clean) ??
+    /[?&]user_code=([A-Z0-9-]{4,20})/i.exec(clean);
+
+  const minMatch = /expires in (\d+) min/i.exec(clean);
+  const authorized =
+    /✓\s*Authorized/i.test(clean) ||
+    /Authorized as /i.test(clean) ||
+    /T3 Connect linked/i.test(clean);
+  const idMatch = /Authorized as ([^\r\n]+)/i.exec(clean);
+
+  const verificationUrl = urlMatch?.[1]?.trim() ?? null;
+  const userCode = codeMatch?.[1]?.trim() ?? null;
+  const installingRelayClient =
+    !userCode &&
+    (/Relay client:/i.test(clean) || /relay client is required/i.test(clean));
 
   const mins = minMatch?.[1] ? Number(minMatch[1]) : NaN;
   return {
-    verificationUrl: urlMatch?.[1] ?? null,
-    userCode: codeMatch?.[1] ?? null,
+    verificationUrl,
+    userCode,
     expiresInSeconds: Number.isFinite(mins) && mins > 0 ? mins * 60 : null,
     authorized,
     identity: idMatch?.[1]?.trim() || null,
+    installingRelayClient,
   };
 }
 
@@ -85,7 +111,10 @@ export class T3ConnectService {
 
     const livePrefs = await this.readLivePreferences();
     const devices = await this.listDevices();
-    const parsedAuth = this.authProc || this.authBuffer ? parseDeviceCodeOutput(this.authBuffer) : null;
+    const parsedAuth =
+      this.authProc || this.authBuffer || this.authError
+        ? parseDeviceCodeOutput(this.authBuffer)
+        : null;
 
     return {
       state,
@@ -103,6 +132,7 @@ export class T3ConnectService {
             userCode: parsedAuth.userCode,
             expiresInSeconds: parsedAuth.expiresInSeconds,
             identity: parsedAuth.identity,
+            installingRelayClient: Boolean(this.authProc) && parsedAuth.installingRelayClient,
             error: this.authError,
           }
         : null,
@@ -119,29 +149,31 @@ export class T3ConnectService {
     const bin = await resolveT3Binary(this.gatewayEnv);
 
     if (!enabled) {
+      const before = await this.getStatus();
       this.cancelDeviceAuth();
-      await runWorkerCommand({
-        command: bin,
-        args: ["connect", "unlink", "--base-dir", this.gatewayEnv.T3CODE_HOME],
-        gatewayEnv: this.gatewayEnv,
-        workerEnv: this.configStore.get().workerEnv,
-        timeoutMs: 15_000,
-      });
-      if (restartImmediately && this.supervisor.getState() === "healthy") {
-        await this.supervisor.restart();
+      if (before.desired || before.linked) {
+        await runWorkerCommand({
+          command: bin,
+          args: ["connect", "unlink", "--base-dir", this.gatewayEnv.T3CODE_HOME],
+          gatewayEnv: this.gatewayEnv,
+          workerEnv: this.configStore.get().workerEnv,
+          timeoutMs: 15_000,
+        });
+        if (restartImmediately && before.linked && this.supervisor.getState() === "healthy") {
+          await this.supervisor.restart();
+        }
       }
       return this.getStatus();
     }
 
     const current = await this.getStatus();
     if (current.authenticated && !current.revoked) {
-      await runWorkerCommand({
-        command: bin,
-        args: ["connect", "link", "--base-dir", this.gatewayEnv.T3CODE_HOME],
-        gatewayEnv: this.gatewayEnv,
-        workerEnv: this.configStore.get().workerEnv,
-        timeoutMs: 15_000,
-      });
+      await this.runConnectSubcommandWithConfirm(bin, [
+        "connect",
+        "link",
+        "--base-dir",
+        this.gatewayEnv.T3CODE_HOME,
+      ]);
       if (restartImmediately && this.supervisor.getState() === "healthy") {
         await this.supervisor.restart();
       }
@@ -163,7 +195,6 @@ export class T3ConnectService {
         body: JSON.stringify(input),
       });
     } catch {
-      // Fallback via CLI publish subcommand when live endpoint requires paired token
       if (typeof input.publishAgentActivity === "boolean") {
         const bin = await resolveT3Binary(this.gatewayEnv);
         await runWorkerCommand({
@@ -218,6 +249,47 @@ export class T3ConnectService {
     return this.getStatus();
   }
 
+  private async runConnectSubcommandWithConfirm(
+    bin: string,
+    args: readonly string[],
+  ): Promise<void> {
+    const cleanEnv = buildCleanWorkerEnv({
+      gatewayEnv: this.gatewayEnv,
+      workerEnv: this.configStore.get().workerEnv,
+    });
+    const wrapped = wrapPrivilegeDrop(bin, args, this.gatewayEnv.CODER_USER);
+
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(wrapped.cmd, wrapped.args, {
+        cwd: this.gatewayEnv.T3_WORKSPACE,
+        env: cleanEnv,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      child.stdin?.write("y\ny\n");
+      child.stdin?.end();
+
+      let stderr = "";
+      child.stderr?.on("data", (d: Buffer) => {
+        if (stderr.length < 4096) stderr += d.toString("utf8");
+      });
+
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error("Timed out running T3 Connect command"));
+      }, 90_000);
+
+      child.once("error", (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+      child.once("close", (code) => {
+        clearTimeout(timer);
+        if (code === 0) resolve();
+        else reject(new Error(stripAnsi(stderr).trim() || `t3 connect exited with code ${code ?? 1}`));
+      });
+    });
+  }
+
   private async startHeadlessDeviceCodeFlow(
     bin: string,
     restartOnSuccess: boolean,
@@ -239,15 +311,26 @@ export class T3ConnectService {
     const proc = spawn(wrapped.cmd, wrapped.args, {
       cwd: this.gatewayEnv.T3_WORKSPACE,
       env: cleanEnv,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
     this.authProc = proc;
 
+    let answeredRelayPrompt = false;
     const onChunk = (chunk: Buffer) => {
-      this.authBuffer += chunk.toString("utf8");
+      const str = chunk.toString("utf8");
+      this.authBuffer += str;
+      // Auto-accept T3's first-run cloudflared relay client installation prompt (`(y/N)`)
+      if (!answeredRelayPrompt && /\(y\/N\)/i.test(stripAnsi(this.authBuffer))) {
+        answeredRelayPrompt = true;
+        try {
+          proc.stdin?.write("y\n");
+        } catch {
+          // Ignore broken pipe
+        }
+      }
     };
-    proc.stdout.on("data", onChunk);
-    proc.stderr.on("data", onChunk);
+    proc.stdout?.on("data", onChunk);
+    proc.stderr?.on("data", onChunk);
 
     proc.on("close", (code) => {
       if (this.authProc === proc) {
@@ -256,16 +339,20 @@ export class T3ConnectService {
       const parsed = parseDeviceCodeOutput(this.authBuffer);
       if (code === 0 || parsed.authorized) {
         this.authBuffer = "";
+        this.authError = null;
         if (restartOnSuccess && this.supervisor.getState() === "healthy") {
           void this.supervisor.restart();
         }
       } else {
-        this.authError = `Authorization exited with code ${code ?? 1}`;
+        const cleanTail = stripAnsi(this.authBuffer).trim().split(/\r?\n/).slice(-3).join(" ");
+        this.authError = cleanTail || `Authorization exited with code ${code ?? 1}`;
       }
     });
 
-    // Wait briefly so the initial URL & 8-char code are captured before returning
-    const deadline = Date.now() + 4_000;
+    // Wait briefly so cached cloudflared setups return the 8-char code immediately;
+    // if cloudflared is downloading for the first time, return `state: "authorizing"` promptly
+    // while `ConnectAccessTab` polls every 1.5s until the code arrives.
+    const deadline = Date.now() + 3_500;
     while (Date.now() < deadline && this.authProc) {
       const parsed = parseDeviceCodeOutput(this.authBuffer);
       if (parsed.verificationUrl && parsed.userCode) break;

@@ -1,6 +1,7 @@
 import * as fsSync from "node:fs";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
+  ClientSyncPushRequestSchema,
   ConnectDeviceActionSchema,
   ConnectPreferencesRequestSchema,
   ConnectToggleRequestSchema,
@@ -33,6 +34,7 @@ import {
 } from "../security/auth-service.js";
 import type { SnapshotService } from "../snapshots/snapshot-service.js";
 import type { T3ProcessSupervisor } from "../supervisor/t3-supervisor.js";
+import { ClientSyncService } from "../sync/client-sync-service.js";
 import type { VersionHubService } from "../versions/version-hub.js";
 
 export interface GatewayServices {
@@ -46,6 +48,7 @@ export interface GatewayServices {
   readonly connectService: T3ConnectService;
   readonly providerService: ProviderToolchainService;
   readonly snapshotService: SnapshotService;
+  readonly clientSyncService?: ClientSyncService;
 }
 
 function resolvePublicOrigin(req: FastifyRequest, services: GatewayServices): string {
@@ -79,6 +82,9 @@ export function registerGatewayApiRoutes(app: FastifyInstance, services: Gateway
     providerService,
     snapshotService,
   } = services;
+  const clientSyncService =
+    services.clientSyncService ??
+    new ClientSyncService(gatewayEnv, configStore, supervisor, desktopSupervisor);
 
   const requireAdmin = async (
     req: FastifyRequest,
@@ -415,6 +421,18 @@ export function registerGatewayApiRoutes(app: FastifyInstance, services: Gateway
     const { id } = req.params as { id: string };
     const ok = await authBridge.revokeSession(id);
     return { ok };
+  });
+
+  // Desktop <-> Web Client Settings & Direct-Environment Synchronizer
+  app.get(`${GATEWAY_API_PREFIX}/sync/state`, async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    return clientSyncService.getSyncState();
+  });
+
+  app.post(`${GATEWAY_API_PREFIX}/sync/push`, async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const body = ClientSyncPushRequestSchema.parse(req.body);
+    return clientSyncService.pushFromBrowser(body);
   });
 
   app.put(`${GATEWAY_API_PREFIX}/settings`, async (req, reply) => {

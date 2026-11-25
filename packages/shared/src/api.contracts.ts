@@ -165,6 +165,7 @@ export const ConnectStatusSchema = z.object({
       userCode: z.string().nullable(),
       expiresInSeconds: z.number().nullable(),
       identity: z.string().nullable(),
+      installingRelayClient: z.boolean().optional(),
       error: z.string().nullable(),
     })
     .nullable(),
@@ -294,3 +295,37 @@ export const UpdateGatewaySettingsRequestSchema = z.object({
   revokeAllSessions: z.boolean().default(false),
 });
 export type UpdateGatewaySettingsRequest = z.infer<typeof UpdateGatewaySettingsRequestSchema>;
+
+export const PortableEnvironmentBundleSchema = z.object({
+  connectionId: z.string().min(1),
+  environmentId: z.string().min(1),
+  label: z.string(),
+  httpBaseUrl: z.string().min(1),
+  wsBaseUrl: z.string().min(1),
+  bearerToken: z.string().min(1),
+});
+export type PortableEnvironmentBundle = z.infer<typeof PortableEnvironmentBundleSchema>;
+
+export const ClientSyncStateSchema = z.object({
+  localEnvironmentId: z.string().nullable(),
+  autoSyncOnLogin: z.boolean(),
+  clientSettings: z.record(z.string(), z.unknown()),
+  webExtras: z.record(z.string(), z.string()),
+  portableEnvironments: z.array(PortableEnvironmentBundleSchema),
+  relayTargets: z.array(
+    z.object({
+      environmentId: z.string(),
+      label: z.string(),
+    }),
+  ),
+  updatedAt: z.string().nullable(),
+});
+export type ClientSyncState = z.infer<typeof ClientSyncStateSchema>;
+
+export const ClientSyncPushRequestSchema = z.object({
+  clientSettings: z.record(z.string(), z.unknown()).optional(),
+  webExtras: z.record(z.string(), z.string()).optional(),
+  portableEnvironments: z.array(PortableEnvironmentBundleSchema).optional(),
+  autoSyncOnLogin: z.boolean().optional(),
+});
+export type ClientSyncPushRequest = z.infer<typeof ClientSyncPushRequestSchema>;

@@ -20,8 +20,34 @@ export interface T3SessionRecord {
   readonly id: string;
   readonly label?: string;
   readonly subject?: string;
+  readonly scopes?: readonly string[];
   readonly createdAt?: string;
   readonly expiresAt?: string;
+}
+
+export const ALL_ADMIN_PAIRING_SCOPES = [
+  "orchestration:read",
+  "orchestration:operate",
+  "settings:write",
+  "providers:manage",
+  "environment:maintain",
+  "preview:operate",
+  "diagnostics:read",
+  "terminal:read",
+  "terminal:operate",
+  "filesystem:read",
+  "filesystem:write",
+  "source-control:write",
+  "access:read",
+  "access:write",
+  "relay:read",
+  "relay:write",
+  "relay:configure",
+] as const;
+
+function hasFullRelayConfigureScope(session: T3SessionRecord): boolean {
+  if (!session.scopes) return true;
+  return session.scopes.includes("relay:configure");
 }
 
 interface CachedPairingGrant {
@@ -163,7 +189,11 @@ export class T3AuthBridge {
     const sessions = await this.listSessions();
     const activeDesktopSessions = sessions.filter((s) => s.label === VNC_DESKTOP_SESSION_LABEL);
 
-    if (hasSavedFile && activeDesktopSessions.length === 1) {
+    if (
+      hasSavedFile &&
+      activeDesktopSessions.length === 1 &&
+      hasFullRelayConfigureScope(activeDesktopSessions[0]!)
+    ) {
       return null;
     }
 
@@ -219,7 +249,11 @@ export class T3AuthBridge {
     const sessions = await this.listSessions();
     const activeDesktopSessions = sessions.filter((s) => s.label === VNC_DESKTOP_SESSION_LABEL);
 
-    if (hasSavedFile && activeDesktopSessions.length === 1) {
+    if (
+      hasSavedFile &&
+      activeDesktopSessions.length === 1 &&
+      hasFullRelayConfigureScope(activeDesktopSessions[0]!)
+    ) {
       return { status: "reused" };
     }
 
@@ -413,6 +447,7 @@ export class T3AuthBridge {
     readonly ttl: string;
     readonly baseUrl: string;
   }): Promise<{ id?: string; redirectPath: string; fullUrl?: string; rawToken?: string }> {
+    const scopeArgs = ALL_ADMIN_PAIRING_SCOPES.flatMap((s) => ["--scope", s]);
     const res = await this.execAuth([
       "pairing",
       "create",
@@ -424,6 +459,7 @@ export class T3AuthBridge {
       input.ttl,
       "--base-url",
       input.baseUrl,
+      ...scopeArgs,
       "--json",
     ]);
     if (res.code !== 0) {
@@ -516,6 +552,9 @@ function normalizeSessionRecord(raw: unknown): T3SessionRecord | null {
     (typeof client?.label === "string" && client.label) ||
     undefined;
   const subject = typeof obj.subject === "string" ? obj.subject : undefined;
+  const scopes = Array.isArray(obj.scopes)
+    ? obj.scopes.filter((s): s is string => typeof s === "string")
+    : undefined;
   const createdAt =
     (typeof obj.createdAt === "string" && obj.createdAt) ||
     (typeof obj.issuedAt === "string" && obj.issuedAt) ||
@@ -525,6 +564,7 @@ function normalizeSessionRecord(raw: unknown): T3SessionRecord | null {
     id,
     ...(label ? { label } : {}),
     ...(subject ? { subject } : {}),
+    ...(scopes ? { scopes } : {}),
     ...(createdAt ? { createdAt } : {}),
     ...(expiresAt ? { expiresAt } : {}),
   };

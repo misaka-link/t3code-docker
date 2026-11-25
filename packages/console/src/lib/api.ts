@@ -1,6 +1,8 @@
 import {
   GATEWAY_API_PREFIX,
   type BootstrapResponse,
+  type ClientSyncPushRequest,
+  type ClientSyncState,
   type ConnectStatus,
   type DesktopConfig,
   type DesktopStatus,
@@ -139,6 +141,14 @@ export const gatewayApi = {
   revokeSession: (id: string) =>
     requestJson<{ ok: boolean }>(`/access/sessions/${encodeURIComponent(id)}`, {
       method: "DELETE",
+    }),
+
+  getSyncState: () => requestJson<ClientSyncState>("/sync/state"),
+
+  pushSyncState: (input: ClientSyncPushRequest) =>
+    requestJson<ClientSyncState>("/sync/push", {
+      method: "POST",
+      body: JSON.stringify(input),
     }),
 
   updateGatewaySettings: (input: UpdateGatewaySettingsRequest) =>

@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { GatewayEnvSchema } from "@t3-docker/shared";
 import {
+  ALL_ADMIN_PAIRING_SCOPES,
   MANUAL_PAIRING_LABEL,
   T3AuthBridge,
   VNC_DESKTOP_SESSION_LABEL,
@@ -196,6 +197,8 @@ describe("T3AuthBridge Zero-Duplicate Issuance & Browser Locale Sync", () => {
   });
 
   it("parses T3 Connect headless device-code output and SHA256SUMS accurately", () => {
+    expect(ALL_ADMIN_PAIRING_SCOPES).toContain("relay:configure");
+
     const sample = `
   Open this URL on a device with a browser:
     https://app.t3.codes/activate
@@ -207,6 +210,26 @@ describe("T3AuthBridge Zero-Duplicate Issuance & Browser Locale Sync", () => {
     expect(parsed.userCode).toBe("K7QM-2XFD");
     expect(parsed.expiresInSeconds).toBe(900);
     expect(parsed.authorized).toBe(false);
+
+    // Real 0.1.12+ ANSI output with cloudflared prompt + accounts.t3.codes URL + Code: XXXX-XXXX
+    const realAnsiOutput = [
+      "\u001b[?25l? The T3 relay client is required for T3 Connect. Download and install version 2026.10.4? › (y/N)",
+      "Relay client: Downloading...",
+      "✓ Relay client ready · cloudflared 2026.10.4",
+      "Sign in to T3 Connect. Open on any device:",
+      "  https://accounts.t3.codes/device?user_code=MZBM-MDVT",
+      "Code: MZBM-MDVT",
+      "Waiting for approval. Expires in 10 min. Ctrl+C cancels.",
+    ].join("\n");
+    const parsedReal = parseDeviceCodeOutput(realAnsiOutput);
+    expect(parsedReal.verificationUrl).toBe("https://accounts.t3.codes/device?user_code=MZBM-MDVT");
+    expect(parsedReal.userCode).toBe("MZBM-MDVT");
+    expect(parsedReal.expiresInSeconds).toBe(600);
+    expect(parsedReal.installingRelayClient).toBe(false);
+
+    const installingOnly = parseDeviceCodeOutput("Relay client: Downloading...\n");
+    expect(installingOnly.userCode).toBeNull();
+    expect(installingOnly.installingRelayClient).toBe(true);
 
     expect(resolveExpectedAssetName("0.1.12", "full", "arm64")).toBe(
       "T3-Code-0.1.12-arm64.deb",

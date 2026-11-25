@@ -75,6 +75,10 @@ export class T3ProcessSupervisor {
     return this.sessionCookieName;
   }
 
+  public getEnvironmentId(): string | null {
+    return this.environmentId;
+  }
+
   public async getStatus(): Promise<SupervisorStatus> {
     const freeDiskMb = await getFreeDiskMb(this.gatewayEnv.T3CODE_HOME);
     const headlessToolsDir = path.join(

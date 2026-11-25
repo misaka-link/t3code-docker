@@ -3,11 +3,17 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as net from "node:net";
 import * as path from "node:path";
-import type { DesktopConfig, DesktopState, DesktopStatus, GatewayEnv } from "@t3-docker/shared";
+import type {
+  DesktopConfig,
+  DesktopState,
+  DesktopStatus,
+  GatewayEnv,
+  PortableEnvironmentBundle,
+} from "@t3-docker/shared";
 import type { T3AuthBridge } from "../auth-bridge/t3-auth-bridge.js";
 import type { ConfigStore } from "../config/config-store.js";
 import { buildCleanWorkerEnv } from "../security/env-sanitizer.js";
-import { fileExists } from "../utils/atomic-fs.js";
+import { fileExists, writeFileAtomic } from "../utils/atomic-fs.js";
 import { runWorkerCommand, wrapPrivilegeDrop } from "../utils/cli-runner.js";
 import { resolveEffectiveDesktopLocale, toT3ClientLanguage } from "./browser-locale.js";
 
@@ -15,6 +21,15 @@ const DISPLAY_ID = ":99";
 const VNC_INTERNAL_PORT = 5900;
 const DBUS_SOCKET_PATH = "/tmp/t3-dbus-session";
 const DBUS_SESSION_ADDRESS = `unix:path=${DBUS_SOCKET_PATH}`;
+
+function isLoopbackUrl(rawUrl: string): boolean {
+  try {
+    const h = new URL(rawUrl).hostname.toLowerCase();
+    return h === "127.0.0.1" || h === "localhost" || h === "::1" || h === "[::1]";
+  } catch {
+    return true;
+  }
+}
 
 /**
  * Encrypts a UTF-8 string using Chromium/Electron's Linux `os_crypt` (`gnome_libsecret` v11) format:
@@ -389,6 +404,264 @@ export class DesktopSupervisor {
     }
   }
 
+  /**
+   * Decrypts `userdata/connection-catalog.json` and extracts portable non-loopback `BearerConnectionTarget`
+   * environments (plus metadata on any non-exportable `RelayConnectionTarget` entries) for Web sync.
+   */
+  public async readDesktopCatalogSummary(localEnvId: string | null): Promise<{
+    portableEnvironments: PortableEnvironmentBundle[];
+    relayTargets: Array<{ environmentId: string; label: string }>;
+  }> {
+    const catalogPath = path.join(
+      this.gatewayEnv.T3CODE_HOME,
+      "userdata",
+      "connection-catalog.json",
+    );
+    if (!(await fileExists(catalogPath))) {
+      return { portableEnvironments: [], relayTargets: [] };
+    }
+
+    try {
+      const secret = this.keyringSecret || (await this.ensureDesktopKeyringSecret());
+      if (!secret) return { portableEnvironments: [], relayTargets: [] };
+      const rawWrapper = JSON.parse(await fs.readFile(catalogPath, "utf8")) as {
+        encryptedCatalog?: string;
+      };
+      if (typeof rawWrapper.encryptedCatalog !== "string") {
+        return { portableEnvironments: [], relayTargets: [] };
+      }
+      const decrypted = decryptLibsecretOsCryptV11(rawWrapper.encryptedCatalog, secret);
+      if (!decrypted) return { portableEnvironments: [], relayTargets: [] };
+
+      const doc = JSON.parse(decrypted) as {
+        targets?: Array<Record<string, unknown>>;
+        profiles?: Array<Record<string, unknown>>;
+        credentials?: Array<Record<string, unknown>>;
+      };
+      const targets = Array.isArray(doc.targets) ? doc.targets : [];
+      const profiles = Array.isArray(doc.profiles) ? doc.profiles : [];
+      const credentials = Array.isArray(doc.credentials) ? doc.credentials : [];
+
+      const portableEnvironments: PortableEnvironmentBundle[] = [];
+      const relayTargets: Array<{ environmentId: string; label: string }> = [];
+
+      for (const t of targets) {
+        const envId = typeof t.environmentId === "string" ? t.environmentId : "";
+        if (!envId || (localEnvId && envId === localEnvId)) continue;
+
+        if (t._tag === "RelayConnectionTarget") {
+          relayTargets.push({
+            environmentId: envId,
+            label: typeof t.label === "string" && t.label ? t.label : envId,
+          });
+          continue;
+        }
+
+        if (t._tag === "BearerConnectionTarget" && typeof t.connectionId === "string") {
+          const prof = profiles.find(
+            (p) => p._tag === "BearerConnectionProfile" && p.connectionId === t.connectionId,
+          );
+          const credEntry = credentials.find((c) => c.connectionId === t.connectionId);
+          const innerCred =
+            credEntry?.credential && typeof credEntry.credential === "object"
+              ? (credEntry.credential as Record<string, unknown>)
+              : null;
+          const httpBaseUrl = typeof prof?.httpBaseUrl === "string" ? prof.httpBaseUrl : "";
+          const wsBaseUrl = typeof prof?.wsBaseUrl === "string" ? prof.wsBaseUrl : "";
+          const bearerToken =
+            innerCred?._tag === "BearerConnectionCredential" && typeof innerCred.token === "string"
+              ? innerCred.token
+              : "";
+
+          if (!httpBaseUrl || !wsBaseUrl || !bearerToken || isLoopbackUrl(httpBaseUrl)) {
+            continue;
+          }
+
+          portableEnvironments.push({
+            connectionId: t.connectionId,
+            environmentId: envId,
+            label:
+              (typeof t.label === "string" && t.label) ||
+              (typeof prof?.label === "string" && prof.label) ||
+              envId,
+            httpBaseUrl,
+            wsBaseUrl,
+            bearerToken,
+          });
+        }
+      }
+
+      return { portableEnvironments, relayTargets };
+    } catch {
+      return { portableEnvironments: [], relayTargets: [] };
+    }
+  }
+
+  /**
+   * Merges portable `BearerConnectionTarget` environments from a Web browser into encrypted
+   * `userdata/connection-catalog.json` while preserving the local loopback target and Relay entries.
+   */
+  public async mergePortableEnvironmentsIntoDesktop(
+    localEnvId: string | null,
+    incoming: readonly PortableEnvironmentBundle[],
+  ): Promise<void> {
+    const validIncoming = incoming.filter(
+      (b) =>
+        b.environmentId &&
+        (!localEnvId || b.environmentId !== localEnvId) &&
+        !isLoopbackUrl(b.httpBaseUrl),
+    );
+    if (validIncoming.length === 0) return;
+
+    const secret = this.keyringSecret || (await this.ensureDesktopKeyringSecret());
+    if (!secret) return;
+
+    const catalogPath = path.join(
+      this.gatewayEnv.T3CODE_HOME,
+      "userdata",
+      "connection-catalog.json",
+    );
+
+    interface RawCatalog {
+      schemaVersion: 1;
+      targets: Array<Record<string, unknown>>;
+      profiles: Array<Record<string, unknown>>;
+      credentials: Array<Record<string, unknown>>;
+      remoteDpopTokens: unknown[];
+      disabledEnvironmentIds: string[];
+      githubRoutingPermissions?: unknown[];
+    }
+
+    let doc: RawCatalog = {
+      schemaVersion: 1,
+      targets: [],
+      profiles: [],
+      credentials: [],
+      remoteDpopTokens: [],
+      disabledEnvironmentIds: [],
+    };
+
+    try {
+      const rawWrapper = JSON.parse(await fs.readFile(catalogPath, "utf8")) as {
+        encryptedCatalog?: string;
+      };
+      if (typeof rawWrapper.encryptedCatalog === "string") {
+        const dec = decryptLibsecretOsCryptV11(rawWrapper.encryptedCatalog, secret);
+        if (dec) {
+          const parsed = JSON.parse(dec) as Partial<RawCatalog>;
+          if (parsed && typeof parsed === "object") {
+            doc = {
+              schemaVersion: 1,
+              targets: Array.isArray(parsed.targets) ? parsed.targets : [],
+              profiles: Array.isArray(parsed.profiles) ? parsed.profiles : [],
+              credentials: Array.isArray(parsed.credentials) ? parsed.credentials : [],
+              remoteDpopTokens: Array.isArray(parsed.remoteDpopTokens) ? parsed.remoteDpopTokens : [],
+              disabledEnvironmentIds: Array.isArray(parsed.disabledEnvironmentIds)
+                ? parsed.disabledEnvironmentIds
+                : [],
+              ...(Array.isArray(parsed.githubRoutingPermissions)
+                ? { githubRoutingPermissions: parsed.githubRoutingPermissions }
+                : {}),
+            };
+          }
+        }
+      }
+    } catch {
+      // Initialize fresh catalog
+    }
+
+    const incomingEnvIds = new Set(validIncoming.map((b) => b.environmentId));
+    const incomingConnIds = new Set(validIncoming.map((b) => b.connectionId));
+
+    const keptTargets = doc.targets.filter((t) => {
+      if (t._tag !== "BearerConnectionTarget") return true;
+      const envId = typeof t.environmentId === "string" ? t.environmentId : "";
+      const connId = typeof t.connectionId === "string" ? t.connectionId : "";
+      return !incomingEnvIds.has(envId) && !incomingConnIds.has(connId);
+    });
+    const removedConnIds = new Set(
+      doc.targets
+        .filter((t) => !keptTargets.includes(t))
+        .map((t) => (typeof t.connectionId === "string" ? t.connectionId : ""))
+        .filter(Boolean),
+    );
+
+    const keptProfiles = doc.profiles.filter((p) => {
+      const connId = typeof p.connectionId === "string" ? p.connectionId : "";
+      return !incomingConnIds.has(connId) && !removedConnIds.has(connId);
+    });
+    const keptCredentials = doc.credentials.filter((c) => {
+      const connId = typeof c.connectionId === "string" ? c.connectionId : "";
+      return !incomingConnIds.has(connId) && !removedConnIds.has(connId);
+    });
+
+    const nextDoc: RawCatalog = {
+      ...doc,
+      schemaVersion: 1,
+      targets: [
+        ...keptTargets,
+        ...validIncoming.map((b) => ({
+          _tag: "BearerConnectionTarget",
+          environmentId: b.environmentId,
+          label: b.label,
+          connectionId: b.connectionId,
+        })),
+      ],
+      profiles: [
+        ...keptProfiles,
+        ...validIncoming.map((b) => ({
+          _tag: "BearerConnectionProfile",
+          connectionId: b.connectionId,
+          environmentId: b.environmentId,
+          label: b.label,
+          httpBaseUrl: b.httpBaseUrl,
+          wsBaseUrl: b.wsBaseUrl,
+        })),
+      ],
+      credentials: [
+        ...keptCredentials,
+        ...validIncoming.map((b) => ({
+          connectionId: b.connectionId,
+          credential: {
+            _tag: "BearerConnectionCredential",
+            token: b.bearerToken,
+          },
+        })),
+      ],
+    };
+
+    const encryptedCatalog = encryptLibsecretOsCryptV11(JSON.stringify(nextDoc), secret);
+    const wrapperJson = `${JSON.stringify({ version: 1, encryptedCatalog }, null, 2)}\n`;
+
+    if (process.platform === "linux" && this.gatewayEnv.CODER_USER) {
+      await runWorkerCommand({
+        command: process.execPath,
+        args: [
+          "-e",
+          "const fs=require('node:fs'),path=require('node:path'),p=process.argv[1],tmp=p+'.tmp';fs.mkdirSync(path.dirname(p),{recursive:true});fs.writeFileSync(tmp,process.argv[2],{mode:0o644});fs.renameSync(tmp,p);",
+          catalogPath,
+          wrapperJson,
+        ],
+        gatewayEnv: this.gatewayEnv,
+        workerEnv: this.configStore.get().workerEnv,
+        cwd: "/tmp",
+        timeoutMs: 5_000,
+      });
+    } else {
+      await fs.mkdir(path.dirname(catalogPath), { recursive: true });
+      await writeFileAtomic(catalogPath, wrapperJson, 0o644);
+    }
+
+    if (this.supported && this.state === "running" && this.procs.has("t3-desktop")) {
+      const activeApp = this.procs.get("t3-desktop");
+      if (activeApp) {
+        this.procs.delete("t3-desktop");
+        await this.terminateProcess(activeApp);
+      }
+      await this.launchT3DesktopApp().catch(() => undefined);
+    }
+  }
+
   public async launchT3DesktopApp(): Promise<void> {
     this.assertSupported();
     if (this.state !== "running") {
@@ -699,20 +972,27 @@ export class DesktopSupervisor {
 
     const generated = crypto.randomBytes(16).toString("base64");
     const iniPayload = buildPreseededKeyringIni(generated);
-    await runWorkerCommand({
-      command: "node",
-      args: [
-        "-e",
-        "const fs=require('node:fs'),dir=process.argv[1],defFile=process.argv[2],krFile=process.argv[3],body=process.argv[4];fs.mkdirSync(dir,{recursive:true,mode:0o700});fs.chmodSync(dir,0o700);fs.writeFileSync(defFile,'login',{mode:0o600});const tmp=krFile+'.tmp';fs.writeFileSync(tmp,body,{mode:0o600});fs.renameSync(tmp,krFile);",
-        keyringDir,
-        defaultPath,
-        keyringPath,
-        iniPayload,
-      ],
-      gatewayEnv: this.gatewayEnv,
-      workerEnv: this.configStore.get().workerEnv,
-      timeoutMs: 5_000,
-    });
+    if (process.platform === "linux" && this.gatewayEnv.CODER_USER) {
+      await runWorkerCommand({
+        command: process.execPath,
+        args: [
+          "-e",
+          "const fs=require('node:fs'),dir=process.argv[1],defFile=process.argv[2],krFile=process.argv[3],body=process.argv[4];fs.mkdirSync(dir,{recursive:true,mode:0o700});fs.chmodSync(dir,0o700);fs.writeFileSync(defFile,'login',{mode:0o600});const tmp=krFile+'.tmp';fs.writeFileSync(tmp,body,{mode:0o600});fs.renameSync(tmp,krFile);",
+          keyringDir,
+          defaultPath,
+          keyringPath,
+          iniPayload,
+        ],
+        gatewayEnv: this.gatewayEnv,
+        workerEnv: this.configStore.get().workerEnv,
+        cwd: "/tmp",
+        timeoutMs: 5_000,
+      });
+    } else {
+      await fs.mkdir(keyringDir, { recursive: true, mode: 0o700 });
+      await writeFileAtomic(defaultPath, "login", 0o600);
+      await writeFileAtomic(keyringPath, iniPayload, 0o600);
+    }
     this.keyringSecret = generated;
     return generated;
   }

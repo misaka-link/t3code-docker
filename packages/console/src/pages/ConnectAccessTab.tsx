@@ -1,8 +1,27 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Check, Copy, ExternalLink, KeyRound, Link2, LogOut, RefreshCw, Trash2 } from "lucide-react";
-import type { ConnectStatus, GatewayPersistedConfig, SupportedLocale } from "@t3-docker/shared";
+import {
+  ArrowDownToLine,
+  ArrowUpFromLine,
+  Check,
+  Copy,
+  ExternalLink,
+  KeyRound,
+  Link2,
+  Loader2,
+  LogOut,
+  RefreshCw,
+  Repeat,
+  Trash2,
+} from "lucide-react";
+import type {
+  ClientSyncState,
+  ConnectStatus,
+  GatewayPersistedConfig,
+  SupportedLocale,
+} from "@t3-docker/shared";
 import { useUiPreferences } from "../i18n/context";
 import { gatewayApi } from "../lib/api";
+import { applySyncStateToBrowser, collectBrowserSyncPayload } from "../lib/client-sync";
 import { Badge, Button, Input, Select, Switch } from "../components/ui";
 
 export function ConnectAccessTab(props: {
@@ -10,6 +29,10 @@ export function ConnectAccessTab(props: {
 }) {
   const { t, locale, setLocale } = useUiPreferences();
   const [connect, setConnect] = useState<ConnectStatus | null>(null);
+  const [togglingConnect, setTogglingConnect] = useState(false);
+  const [syncState, setSyncState] = useState<ClientSyncState | null>(null);
+  const [syncBusy, setSyncBusy] = useState<"pull" | "push" | null>(null);
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
   const [sessions, setSessions] = useState<Array<{ id: string; label?: string; expiresAt?: string }>>([]);
   const [pairingLink, setPairingLink] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -28,12 +51,14 @@ export function ConnectAccessTab(props: {
 
   const loadAll = async () => {
     try {
-      const [c, acc] = await Promise.all([
+      const [c, acc, sync] = await Promise.all([
         gatewayApi.getConnectStatus(),
         gatewayApi.getAccessSessions(),
+        gatewayApi.getSyncState(),
       ]);
       setConnect(c);
       setSessions(acc.sessions);
+      setSyncState(sync);
       applySettingsForm(acc.settings);
     } catch (err) {
       setError(err instanceof Error ? err.message : t.common.error);
@@ -60,8 +85,16 @@ export function ConnectAccessTab(props: {
   useEffect(() => {
     if (connect?.state !== "authorizing") return undefined;
     const timer = setInterval(() => {
-      void gatewayApi.getConnectStatus().then(setConnect).catch(() => undefined);
-    }, 2000);
+      void gatewayApi
+        .getConnectStatus()
+        .then((next) => {
+          setConnect(next);
+          if (next.deviceAuth?.error && next.state !== "authorizing") {
+            setError(next.deviceAuth.error);
+          }
+        })
+        .catch(() => undefined);
+    }, 1500);
     return () => clearInterval(timer);
   }, [connect?.state]);
 
@@ -73,10 +106,61 @@ export function ConnectAccessTab(props: {
 
   const handleToggleConnect = async (enabled: boolean) => {
     setError(null);
+    setTogglingConnect(true);
     try {
-      setConnect(await gatewayApi.toggleConnect(enabled, true));
+      const next = await gatewayApi.toggleConnect(enabled, true);
+      setConnect(next);
+      if (next.deviceAuth?.error && next.state === "off") {
+        setError(next.deviceAuth.error);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : t.common.error);
+    } finally {
+      setTogglingConnect(false);
+    }
+  };
+
+  const handleToggleAutoSync = async (autoSyncOnLogin: boolean) => {
+    setError(null);
+    try {
+      const next = await gatewayApi.pushSyncState({ autoSyncOnLogin });
+      setSyncState(next);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t.common.error);
+    }
+  };
+
+  const handlePullFromDesktop = async () => {
+    setError(null);
+    setSyncNotice(null);
+    setSyncBusy("pull");
+    try {
+      const latest = await gatewayApi.getSyncState();
+      setSyncState(latest);
+      await applySyncStateToBrowser(latest);
+      setSyncNotice(t.connect.syncPulledNotice);
+      setTimeout(() => setSyncNotice(null), 4000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t.common.error);
+    } finally {
+      setSyncBusy(null);
+    }
+  };
+
+  const handlePushToDesktop = async () => {
+    setError(null);
+    setSyncNotice(null);
+    setSyncBusy("push");
+    try {
+      const payload = await collectBrowserSyncPayload(syncState?.localEnvironmentId ?? null);
+      const updated = await gatewayApi.pushSyncState(payload);
+      setSyncState(updated);
+      setSyncNotice(t.connect.syncPushedNotice);
+      setTimeout(() => setSyncNotice(null), 4000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t.common.error);
+    } finally {
+      setSyncBusy(null);
     }
   };
 
@@ -143,7 +227,7 @@ export function ConnectAccessTab(props: {
       </div>
 
       {error && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-400">
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-400 break-words">
           {error}
         </div>
       )}
@@ -160,28 +244,24 @@ export function ConnectAccessTab(props: {
               {t.connect.t3ConnectDesc}
             </p>
           </div>
-          <Switch
-            checked={isConnectSwitchOn}
-            onChange={(next) => void handleToggleConnect(next)}
-          />
-        </div>
-
-        <div className="rounded-lg border border-[var(--border)] bg-[var(--muted)]/40 p-3 space-y-2">
-          <p className="text-[11px] text-[var(--muted-foreground)] leading-relaxed">
-            {t.connect.webMultiEnvHint}
-          </p>
-          <div>
-            <a
-              href="https://app.t3.codes"
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--primary)] hover:underline"
-            >
-              <span>{t.connect.openHostedWebBtn}</span>
-              <ExternalLink className="h-3 w-3" />
-            </a>
+          <div className="flex items-center gap-2">
+            {togglingConnect && (
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--muted-foreground)]" />
+            )}
+            <Switch
+              checked={isConnectSwitchOn}
+              disabled={togglingConnect}
+              onChange={(next) => void handleToggleConnect(next)}
+            />
           </div>
         </div>
+
+        {(connect?.state === "authorizing" || togglingConnect) && !connect?.deviceAuth?.userCode && (
+          <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-3.5 flex items-center gap-2.5 text-xs text-blue-300">
+            <Loader2 className="h-4 w-4 animate-spin shrink-0 text-blue-400" />
+            <span>{t.connect.preparingRelayClient}</span>
+          </div>
+        )}
 
         {connect?.deviceAuth?.userCode && (
           <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-4 space-y-3">
@@ -211,6 +291,23 @@ export function ConnectAccessTab(props: {
             </div>
           </div>
         )}
+
+        <div className="rounded-lg border border-[var(--border)] bg-[var(--muted)]/40 p-3 space-y-2">
+          <p className="text-[11px] text-[var(--muted-foreground)] leading-relaxed">
+            {t.connect.webMultiEnvHint}
+          </p>
+          <div>
+            <a
+              href="https://app.t3.codes"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--primary)] hover:underline"
+            >
+              <span>{t.connect.openHostedWebBtn}</span>
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          </div>
+        </div>
 
         {connect?.linked && (
           <div className="space-y-3 pt-2 border-t border-[var(--border)]">
@@ -287,7 +384,105 @@ export function ConnectAccessTab(props: {
         )}
       </section>
 
-      {/* 2. Idempotent Direct Pairing & Sessions */}
+      {/* 2. Desktop <-> Web Client Config & Direct-Environment Synchronizer */}
+      <section className="t3-card p-5 space-y-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <Repeat className="h-4 w-4 text-[var(--accent)]" />
+            <h3 className="text-sm font-semibold">{t.connect.syncSectionTitle}</h3>
+          </div>
+          <p className="text-xs text-[var(--muted-foreground)] leading-relaxed">
+            {t.connect.syncSectionDesc}
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-lg border border-[var(--border)] bg-[var(--muted)]/30 p-3">
+            <div className="text-[11px] text-[var(--muted-foreground)]">
+              {t.connect.syncStatsSettings}
+            </div>
+            <div className="text-sm font-mono font-semibold mt-0.5">
+              {syncState ? Object.keys(syncState.clientSettings).length : 0}
+            </div>
+          </div>
+          <div className="rounded-lg border border-[var(--border)] bg-[var(--muted)]/30 p-3">
+            <div className="text-[11px] text-[var(--muted-foreground)]">
+              {t.connect.syncStatsEnvs}
+            </div>
+            <div className="text-sm font-mono font-semibold mt-0.5">
+              {syncState ? syncState.portableEnvironments.length : 0}
+            </div>
+          </div>
+        </div>
+
+        {syncState && syncState.portableEnvironments.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {syncState.portableEnvironments.map((env) => (
+              <Badge key={env.connectionId} tone="success">
+                {env.label} ({env.httpBaseUrl})
+              </Badge>
+            ))}
+          </div>
+        )}
+
+        {syncState && syncState.relayTargets.length > 0 && (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 space-y-1.5 text-xs">
+            <div className="font-medium text-amber-400">
+              {t.connect.syncRelayOnlyTitle}{" "}
+              <span className="font-mono">
+                {syncState.relayTargets.map((r) => r.label).join(", ")}
+              </span>
+            </div>
+            <p className="text-[11px] text-[var(--muted-foreground)] leading-relaxed">
+              {t.connect.syncRelayOnlyHint}
+            </p>
+          </div>
+        )}
+
+        <div className="flex items-center justify-between gap-4 pt-1">
+          <span className="text-xs">{t.connect.syncAutoLabel}</span>
+          <Switch
+            checked={syncState?.autoSyncOnLogin ?? true}
+            onChange={(val) => void handleToggleAutoSync(val)}
+          />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2.5 pt-1">
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={syncBusy !== null}
+            onClick={() => void handlePullFromDesktop()}
+          >
+            {syncBusy === "pull" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <ArrowDownToLine className="h-3.5 w-3.5" />
+            )}
+            <span>{t.connect.syncPullBtn}</span>
+          </Button>
+          <Button
+            size="sm"
+            disabled={syncBusy !== null}
+            onClick={() => void handlePushToDesktop()}
+          >
+            {syncBusy === "push" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <ArrowUpFromLine className="h-3.5 w-3.5" />
+            )}
+            <span>{t.connect.syncPushBtn}</span>
+          </Button>
+        </div>
+
+        {syncNotice && (
+          <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-400">
+            {syncNotice}
+          </div>
+        )}
+      </section>
+
+      {/* 3. Idempotent Direct Pairing & Sessions */}
       <section className="t3-card p-5 space-y-4">
         <div className="space-y-1">
           <h3 className="text-sm font-semibold">{t.connect.qrSectionTitle}</h3>
@@ -346,7 +541,7 @@ export function ConnectAccessTab(props: {
         </div>
       </section>
 
-      {/* 3. Gateway Dynamic Paths & Password */}
+      {/* 4. Gateway Dynamic Paths & Password */}
       <form onSubmit={handleSaveGatewaySettings} className="t3-card p-5 space-y-4">
         <div className="flex items-center gap-2">
           <KeyRound className="h-4 w-4 text-[var(--muted-foreground)]" />

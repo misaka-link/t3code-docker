@@ -9,6 +9,7 @@ import { GatewayAuthService } from "./security/auth-service.js";
 import { consumeAndScrubProcessSecrets } from "./security/env-sanitizer.js";
 import { SnapshotService } from "./snapshots/snapshot-service.js";
 import { T3ProcessSupervisor } from "./supervisor/t3-supervisor.js";
+import { ClientSyncService } from "./sync/client-sync-service.js";
 import { VersionHubService } from "./versions/version-hub.js";
 
 async function bootstrap(): Promise<void> {
@@ -47,6 +48,12 @@ async function bootstrap(): Promise<void> {
     supervisor,
     desktopSupervisor,
   );
+  const clientSyncService = new ClientSyncService(
+    gatewayEnv,
+    configStore,
+    supervisor,
+    desktopSupervisor,
+  );
   await providerService.init();
   await desktopSupervisor.syncLocaleFromGateway(configStore.get().locale).catch(() => undefined);
 
@@ -62,6 +69,7 @@ async function bootstrap(): Promise<void> {
     connectService,
     providerService,
     snapshotService,
+    clientSyncService,
   });
 
   await app.listen({

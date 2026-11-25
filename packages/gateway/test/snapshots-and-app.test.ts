@@ -301,6 +301,60 @@ describe("Snapshot Archive Safety & Fastify Unified Gateway Integration", () => 
         headers: { cookie: cookiePair, accept: "text/html" },
       });
       expect(vncRes.statusCode).toBe(404);
+
+      // 7. Bidirectional Desktop <-> Web ClientSyncService round-trip
+      const pushSyncRes = await app.inject({
+        method: "POST",
+        url: `${GATEWAY_API_PREFIX}/sync/push`,
+        headers: { cookie: cookiePair, host: "localhost:3080", origin: "http://localhost:3080" },
+        payload: {
+          clientSettings: {
+            fontSizeCode: 16,
+            sendShortcut: "mod-enter",
+          },
+          webExtras: {
+            "t3code:theme": "tokyo-night",
+            "evil:untrusted-key": "ignored",
+          },
+          portableEnvironments: [
+            {
+              connectionId: "bearer:env-remote-box:https://box.example.com",
+              environmentId: "env-remote-box",
+              label: "Home Workstation",
+              httpBaseUrl: "https://box.example.com",
+              wsBaseUrl: "wss://box.example.com",
+              bearerToken: "secret-bearer-token-xyz",
+            },
+            {
+              connectionId: "bearer:env-loopback:http://127.0.0.1:3773",
+              environmentId: "env-loopback",
+              label: "Loopback Ignored",
+              httpBaseUrl: "http://127.0.0.1:3773",
+              wsBaseUrl: "ws://127.0.0.1:3773",
+              bearerToken: "ignored-loopback",
+            },
+          ],
+        },
+      });
+      expect(pushSyncRes.statusCode).toBe(200);
+
+      const syncStateRes = await app.inject({
+        method: "GET",
+        url: `${GATEWAY_API_PREFIX}/sync/state`,
+        headers: { cookie: cookiePair },
+      });
+      expect(syncStateRes.statusCode).toBe(200);
+      const syncState = syncStateRes.json() as {
+        clientSettings: Record<string, unknown>;
+        webExtras: Record<string, string>;
+        portableEnvironments: Array<{ environmentId: string; label: string }>;
+      };
+      expect(syncState.clientSettings.fontSizeCode).toBe(16);
+      expect(syncState.clientSettings.sendShortcut).toBe("mod-enter");
+      expect(syncState.webExtras["t3code:theme"]).toBe("tokyo-night");
+      expect(syncState.webExtras["evil:untrusted-key"]).toBeUndefined();
+      expect(syncState.portableEnvironments).toHaveLength(1);
+      expect(syncState.portableEnvironments[0]?.environmentId).toBe("env-remote-box");
     } finally {
       await app.close();
       await desktopSupervisor.shutdown();
