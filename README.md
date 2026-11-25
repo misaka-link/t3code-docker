@@ -1,5 +1,8 @@
 # T3 Code Docker (`t3code-docker`)
 
+[![CI & Multi-Arch Docker Build](https://github.com/misaka-link/t3code-docker/actions/workflows/docker-build.yml/badge.svg)](https://github.com/misaka-link/t3code-docker/actions/workflows/docker-build.yml)
+[![GHCR Package](https://img.shields.io/badge/GHCR-ghcr.io%2Fmisaka--link%2Ft3code--docker-2496ED?logo=docker&logoColor=white)](https://github.com/misaka-link/t3code-docker/pkgs/container/t3code-docker)
+
 专为官方 [T3 Code (`pingdotgg/t3code`)](https://github.com/pingdotgg/t3code) 打造的**生产级容器化套件与 1:1 官方同源风格 Web 安全网关**。
 
 全仓采用 **100% TypeScript (`strict: true`) + Fastify + React 19 + Tailwind CSS v4** 构建，坚持**零侵入官方原版产物（Zero Monkey-Patching）**、**双镜像满血研发底座零阉割**与**内核级双 UID 安全隔离**。
@@ -19,12 +22,23 @@
 
 ---
 
-## 📦 镜像变体对比
+## 📦 官方 GitHub Actions 编译镜像地址与变体对比
+
+镜像由 GitHub Actions 原生 `amd64` + `arm64` 双架构自动编译并公开发布于 **[GitHub Container Registry (`t3code-docker`)](https://github.com/misaka-link/t3code-docker/pkgs/container/t3code-docker)**：
+
+```bash
+# 默认完整版（满血研发环境 + 按需休眠 VNC 桌面 + 有头 Chromium + T3 桌面版）
+docker pull ghcr.io/misaka-link/t3code-docker:latest
+
+# 无桌面版（100% 同款满血研发环境，物理移除 VNC / GUI 组件；亦可使用 :slim 别名）
+docker pull ghcr.io/misaka-link/t3code-docker:headless
+```
 
 两款镜像共享 **100% 一致的满血研发与编译底座**，唯一差异仅为是否搭载虚拟桌面与有头 GUI 软件：
 
-| 维度 | `:latest`（默认完整版） | `:headless` / `:slim`（无桌面版） |
+| 维度 | `ghcr.io/misaka-link/t3code-docker:latest`（默认完整版） | `ghcr.io/misaka-link/t3code-docker:headless`（别名 `:slim`） |
 | :--- | :---: | :---: |
+| **镜像主页** | [查看 GHCR 镜像包](https://github.com/misaka-link/t3code-docker/pkgs/container/t3code-docker) | [查看 GHCR 镜像包](https://github.com/misaka-link/t3code-docker/pkgs/container/t3code-docker) |
 | **研发编译链 (`gcc`/`git`/`gh`/`Node`/`uv`/`mise`/`rg`/`ffmpeg`)** | **100% 满血 ✅** | **100% 满血 ✅** |
 | **全彩 Emoji (`Noto Color Emoji`) 与中日韩字体** | **100% 满血 ✅** | **100% 满血 ✅** |
 | **T3 官方内置无头流式浏览器 (`preview_*` / `html_render`)** | **支持 ✅** | **支持 ✅** |

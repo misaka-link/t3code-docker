@@ -248,9 +248,9 @@ flowchart LR
     BaseDev --> Full["Stage 3B: runtime-full (:latest 默认完整版)\n叠加 Xvfb + openbox + x11vnc + noVNC + websockify\n有头 Chromium + chromium-l10n 多语言包 + T3-Code-*.deb\nT3GW_VARIANT=full (桌面默认休眠 0 内存)"]
 ```
 
-- **标签发布策略**：
-  - `:latest` / `:<suite_ver>` / `:t3-<t3_ver>` → 指向 `runtime-full`（双架构 Manifest）；
-  - `:headless` / `:slim` / `:<suite_ver>-headless` → 指向 `runtime-headless`（双架构 Manifest）。
+- **GitHub Actions 自动编译与 GHCR 发布地址**（[查看 GitHub Container Registry 镜像主页](https://github.com/misaka-link/t3code-docker/pkgs/container/t3code-docker)）：
+  - `ghcr.io/misaka-link/t3code-docker:latest`（及版本标签 `:<ver>` / `:v<ver>`）→ 指向 `full`（`linux/amd64` + `linux/arm64` 原生双架构 Manifest）；
+  - `ghcr.io/misaka-link/t3code-docker:headless` / `ghcr.io/misaka-link/t3code-docker:slim`（及 `:<ver>-headless`）→ 指向 `headless`（`linux/amd64` + `linux/arm64` 原生双架构 Manifest）。
 
 ### 6.2 标准持久化数据卷规划
 

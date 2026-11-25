@@ -1,10 +1,11 @@
 services:
   t3code-headless:
     image: ghcr.io/misaka-link/t3code-docker:headless
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
-      target: headless
+    # 如需本地从源码编译而非直接拉取 GitHub 编译镜像，可取消下方 build 注释：
+    # build:
+    #   context: .
+    #   dockerfile: docker/Dockerfile
+    #   target: headless
     container_name: t3code-headless
     restart: unless-stopped
     init: true
