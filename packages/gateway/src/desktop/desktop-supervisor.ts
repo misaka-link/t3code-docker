@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as net from "node:net";
 import * as path from "node:path";
@@ -15,11 +16,154 @@ const VNC_INTERNAL_PORT = 5900;
 const DBUS_SOCKET_PATH = "/tmp/t3-dbus-session";
 const DBUS_SESSION_ADDRESS = `unix:path=${DBUS_SOCKET_PATH}`;
 
+/**
+ * Encrypts a UTF-8 string using Chromium/Electron's Linux `os_crypt` (`gnome_libsecret` v11) format:
+ * `"v11" || AES-128-CBC(plaintext, PBKDF2-HMAC-SHA1(secret, "saltysalt", 1, 16), iv=16x0x20)`.
+ */
+export function encryptLibsecretOsCryptV11(plaintext: string, keyringSecret: string): string {
+  const key = crypto.pbkdf2Sync(
+    Buffer.from(keyringSecret, "utf8"),
+    Buffer.from("saltysalt", "utf8"),
+    1,
+    16,
+    "sha1",
+  );
+  const iv = Buffer.alloc(16, 0x20);
+  const cipher = crypto.createCipheriv("aes-128-cbc", key, iv);
+  const encrypted = Buffer.concat([
+    Buffer.from("v11", "ascii"),
+    cipher.update(plaintext, "utf8"),
+    cipher.final(),
+  ]);
+  return encrypted.toString("base64");
+}
+
+/**
+ * Decrypts a base64-encoded Chromium/Electron Linux `os_crypt` v11 payload, or returns `null` if invalid.
+ */
+export function decryptLibsecretOsCryptV11(encodedBase64: string, keyringSecret: string): string | null {
+  try {
+    const raw = Buffer.from(encodedBase64, "base64");
+    if (raw.length <= 3 || raw.subarray(0, 3).toString("ascii") !== "v11") {
+      return null;
+    }
+    const key = crypto.pbkdf2Sync(
+      Buffer.from(keyringSecret, "utf8"),
+      Buffer.from("saltysalt", "utf8"),
+      1,
+      16,
+      "sha1",
+    );
+    const iv = Buffer.alloc(16, 0x20);
+    const decipher = crypto.createDecipheriv("aes-128-cbc", key, iv);
+    const decrypted = Buffer.concat([decipher.update(raw.subarray(3)), decipher.final()]);
+    return decrypted.toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+export function extractLibsecretFromKeyringIni(iniText: string): string | null {
+  const itemSecrets = new Map<string, string>();
+  const attrNames = new Map<string, string>();
+  const osCryptItemIds = new Set<string>();
+
+  let currentSection = "";
+  for (const rawLine of iniText.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const secMatch = /^\[([^\]]+)\]$/.exec(line);
+    if (secMatch) {
+      currentSection = secMatch[1]!;
+      continue;
+    }
+    const eqIdx = line.indexOf("=");
+    if (eqIdx <= 0) continue;
+    const k = line.slice(0, eqIdx).trim();
+    const v = line.slice(eqIdx + 1).trim();
+
+    if (/^\d+$/.test(currentSection) && k === "secret" && v) {
+      itemSecrets.set(currentSection, v);
+    } else if (/^\d+:attribute\d+$/.test(currentSection)) {
+      if (k === "name") {
+        attrNames.set(currentSection, v);
+      } else if (
+        k === "value" &&
+        v === "chrome_libsecret_os_crypt_password_v2" &&
+        attrNames.get(currentSection) === "xdg:schema"
+      ) {
+        const itemId = currentSection.split(":")[0]!;
+        osCryptItemIds.add(itemId);
+      }
+    }
+  }
+
+  for (const id of osCryptItemIds) {
+    const sec = itemSecrets.get(id);
+    if (sec) return sec;
+  }
+  return null;
+}
+
+export function buildPreseededKeyringIni(secret: string): string {
+  const apps = ["t3code", "t3-code", "t3-code-nightly"];
+  const lines = [
+    "[keyring]",
+    "display-name=login",
+    "ctime=0",
+    "mtime=0",
+    "lock-on-idle=false",
+    "lock-after=false",
+    "",
+    "[1]",
+    "item-type=0",
+    "display-name=Chrome Safe Storage Control",
+    "secret=The meaning of life",
+    "mtime=0",
+    "ctime=0",
+    "",
+    "[1:attribute0]",
+    "name=explanation",
+    "type=string",
+    "value=Chrome Safe Storage Control",
+    "",
+    "[1:attribute1]",
+    "name=xdg:schema",
+    "type=string",
+    "value=_chrome_dummy_schema_for_unlocking",
+    "",
+  ];
+  apps.forEach((appName, idx) => {
+    const itemNum = idx + 2;
+    lines.push(
+      `[${itemNum}]`,
+      "item-type=0",
+      "display-name=Chromium Safe Storage",
+      `secret=${secret}`,
+      "mtime=0",
+      "ctime=0",
+      "",
+      `[${itemNum}:attribute0]`,
+      "name=application",
+      "type=string",
+      `value=${appName}`,
+      "",
+      `[${itemNum}:attribute1]`,
+      "name=xdg:schema",
+      "type=string",
+      "value=chrome_libsecret_os_crypt_password_v2",
+      "",
+    );
+  });
+  return `${lines.join("\n")}\n`;
+}
+
 export class DesktopSupervisor {
   public readonly supported: boolean;
   private state: DesktopState;
   private readonly procs = new Map<string, ChildProcess>();
   private sessionEnv: Record<string, string> = {};
+  private keyringSecret = "";
   private activeConnections = 0;
   private lastActivityMs = Date.now();
   private activeLocale = "zh-CN";
@@ -199,9 +343,10 @@ export class DesktopSupervisor {
     await this.prepareT3DesktopCoexistenceSettings();
 
     const upstreamUrl = `http://${this.gatewayEnv.T3_UPSTREAM_HOST}:${this.gatewayEnv.T3_UPSTREAM_PORT}`;
-    const pairingLink = await this.authBridge
-      .ensureVncDesktopPairingAppLink(upstreamUrl)
-      .catch(() => null);
+    const preseeded = await this.preseedVncDesktopCatalog(upstreamUrl).catch(() => false);
+    const pairingLink = preseeded
+      ? null
+      : await this.authBridge.ensureVncDesktopPairingAppLink(upstreamUrl).catch(() => null);
 
     const localeBundle = await this.resolveCurrentLocaleBundle();
     // Use gnome-libsecret (unlocked via session D-Bus + gnome-keyring-daemon) so Electron's
@@ -414,16 +559,13 @@ export class DesktopSupervisor {
     localeEnv: Readonly<Record<string, string>>,
   ): Promise<void> {
     this.sessionEnv = {};
+    await this.ensureDesktopKeyringSecret().catch(() => undefined);
+
     const setupScript = [
       "set -e",
       `keyrings_target="${this.gatewayEnv.T3CODE_HOME}/.keyrings"`,
       `keyrings_link="${this.gatewayEnv.CODER_HOME}/.local/share/keyrings"`,
       'mkdir -p -m 0700 "$keyrings_target" "$(dirname "$keyrings_link")"',
-      'if [ ! -f "$keyrings_target/login.keyring" ]; then',
-      '  printf "login" > "$keyrings_target/default"',
-      '  printf "[keyring]\\ndisplay-name=login\\nctime=0\\nmtime=0\\nlock-on-idle=false\\nlock-after=false\\n" > "$keyrings_target/login.keyring"',
-      '  chmod 0600 "$keyrings_target/default" "$keyrings_target/login.keyring"',
-      "fi",
       'if [ ! -e "$keyrings_link" ]; then ln -s "$keyrings_target" "$keyrings_link"; fi',
       "if command -v dbus-daemon >/dev/null 2>&1; then",
       `  dbus-daemon --session --address="${DBUS_SESSION_ADDRESS}" --fork`,
@@ -458,6 +600,181 @@ export class DesktopSupervisor {
       }
       this.sessionEnv = envMap;
     }
+  }
+
+  /**
+   * Ensures `$T3CODE_HOME/.keyrings/login.keyring` holds a known `chrome_libsecret_os_crypt_password_v2`
+   * key before `gnome-keyring-daemon` unlocks it, allowing Gateway to pre-encrypt `connection-catalog.json`.
+   */
+  private async ensureDesktopKeyringSecret(): Promise<string> {
+    const keyringDir = path.join(this.gatewayEnv.T3CODE_HOME, ".keyrings");
+    const keyringPath = path.join(keyringDir, "login.keyring");
+    const defaultPath = path.join(keyringDir, "default");
+
+    const existingRaw = await fs.readFile(keyringPath, "utf8").catch(() => "");
+    const existingSecret = existingRaw ? extractLibsecretFromKeyringIni(existingRaw) : null;
+    if (existingSecret) {
+      this.keyringSecret = existingSecret;
+      return existingSecret;
+    }
+
+    const generated = crypto.randomBytes(16).toString("base64");
+    const iniPayload = buildPreseededKeyringIni(generated);
+    await runWorkerCommand({
+      command: "node",
+      args: [
+        "-e",
+        "const fs=require('node:fs'),dir=process.argv[1],defFile=process.argv[2],krFile=process.argv[3],body=process.argv[4];fs.mkdirSync(dir,{recursive:true,mode:0o700});fs.chmodSync(dir,0o700);fs.writeFileSync(defFile,'login',{mode:0o600});const tmp=krFile+'.tmp';fs.writeFileSync(tmp,body,{mode:0o600});fs.renameSync(tmp,krFile);",
+        keyringDir,
+        defaultPath,
+        keyringPath,
+        iniPayload,
+      ],
+      gatewayEnv: this.gatewayEnv,
+      workerEnv: this.configStore.get().workerEnv,
+      timeoutMs: 5_000,
+    });
+    this.keyringSecret = generated;
+    return generated;
+  }
+
+  /**
+   * Pre-seeds an encrypted `userdata/connection-catalog.json` with a live Bearer session token
+   * so T3 Desktop boots straight into `/workspace` with ZERO "Add the backend at ...?" prompt.
+   */
+  private async preseedVncDesktopCatalog(loopbackUpstreamUrl: string): Promise<boolean> {
+    const secret = this.keyringSecret || (await this.ensureDesktopKeyringSecret());
+    if (!secret) return false;
+
+    const bootstrap = await this.authBridge.bootstrapVncDesktopBearerSession(loopbackUpstreamUrl);
+    if (bootstrap.status === "reused") {
+      return true;
+    }
+
+    const catalogPath = path.join(
+      this.gatewayEnv.T3CODE_HOME,
+      "userdata",
+      "connection-catalog.json",
+    );
+
+    interface CatalogDoc {
+      schemaVersion: 1;
+      targets: Array<Record<string, unknown>>;
+      profiles: Array<Record<string, unknown>>;
+      credentials: Array<Record<string, unknown>>;
+      remoteDpopTokens: unknown[];
+      disabledEnvironmentIds: string[];
+      githubRoutingPermissions?: unknown[];
+    }
+
+    let existingCatalog: CatalogDoc = {
+      schemaVersion: 1,
+      targets: [],
+      profiles: [],
+      credentials: [],
+      remoteDpopTokens: [],
+      disabledEnvironmentIds: [],
+    };
+
+    try {
+      const rawWrapper = JSON.parse(await fs.readFile(catalogPath, "utf8")) as {
+        encryptedCatalog?: string;
+      };
+      if (typeof rawWrapper.encryptedCatalog === "string") {
+        const decrypted = decryptLibsecretOsCryptV11(rawWrapper.encryptedCatalog, secret);
+        if (decrypted) {
+          const parsed = JSON.parse(decrypted) as Partial<CatalogDoc>;
+          if (parsed && typeof parsed === "object") {
+            existingCatalog = {
+              schemaVersion: 1,
+              targets: Array.isArray(parsed.targets) ? parsed.targets : [],
+              profiles: Array.isArray(parsed.profiles) ? parsed.profiles : [],
+              credentials: Array.isArray(parsed.credentials) ? parsed.credentials : [],
+              remoteDpopTokens: Array.isArray(parsed.remoteDpopTokens)
+                ? parsed.remoteDpopTokens
+                : [],
+              disabledEnvironmentIds: Array.isArray(parsed.disabledEnvironmentIds)
+                ? parsed.disabledEnvironmentIds
+                : [],
+              ...(Array.isArray(parsed.githubRoutingPermissions)
+                ? { githubRoutingPermissions: parsed.githubRoutingPermissions }
+                : {}),
+            };
+          }
+        }
+      }
+    } catch {
+      // Fresh or unreadable catalog; start from clean document
+    }
+
+    const origin = new URL(bootstrap.httpBaseUrl).origin;
+    const connectionId = `bearer:${bootstrap.environmentId}:${origin}`;
+
+    const keptTargets = existingCatalog.targets.filter(
+      (t) => t.environmentId !== bootstrap.environmentId && t.connectionId !== connectionId,
+    );
+    const keptProfiles = existingCatalog.profiles.filter(
+      (p) => p.environmentId !== bootstrap.environmentId && p.connectionId !== connectionId,
+    );
+    const keptCredentials = existingCatalog.credentials.filter(
+      (c) => c.connectionId !== connectionId,
+    );
+
+    const nextDoc: CatalogDoc = {
+      ...existingCatalog,
+      schemaVersion: 1,
+      targets: [
+        ...keptTargets,
+        {
+          _tag: "BearerConnectionTarget",
+          environmentId: bootstrap.environmentId,
+          label: bootstrap.label,
+          connectionId,
+        },
+      ],
+      profiles: [
+        ...keptProfiles,
+        {
+          _tag: "BearerConnectionProfile",
+          connectionId,
+          environmentId: bootstrap.environmentId,
+          label: bootstrap.label,
+          httpBaseUrl: bootstrap.httpBaseUrl,
+          wsBaseUrl: bootstrap.wsBaseUrl,
+        },
+      ],
+      credentials: [
+        ...keptCredentials,
+        {
+          connectionId,
+          credential: {
+            _tag: "BearerConnectionCredential",
+            token: bootstrap.bearerToken,
+          },
+        },
+      ],
+      disabledEnvironmentIds: existingCatalog.disabledEnvironmentIds.filter(
+        (id) => id !== bootstrap.environmentId,
+      ),
+    };
+
+    const encryptedCatalog = encryptLibsecretOsCryptV11(JSON.stringify(nextDoc), secret);
+    const wrapperJson = `${JSON.stringify({ version: 1, encryptedCatalog }, null, 2)}\n`;
+
+    const writeRes = await runWorkerCommand({
+      command: "node",
+      args: [
+        "-e",
+        "const fs=require('node:fs'),path=require('node:path'),p=process.argv[1],tmp=p+'.tmp';fs.mkdirSync(path.dirname(p),{recursive:true});fs.writeFileSync(tmp,process.argv[2],{mode:0o644});fs.renameSync(tmp,p);",
+        catalogPath,
+        wrapperJson,
+      ],
+      gatewayEnv: this.gatewayEnv,
+      workerEnv: this.configStore.get().workerEnv,
+      timeoutMs: 5_000,
+    });
+
+    return writeRes.code === 0;
   }
 
   /**

@@ -16,6 +16,12 @@ import {
   normalizeBrowserLocale,
   toT3ClientLanguage,
 } from "../src/desktop/browser-locale.js";
+import {
+  buildPreseededKeyringIni,
+  decryptLibsecretOsCryptV11,
+  encryptLibsecretOsCryptV11,
+  extractLibsecretFromKeyringIni,
+} from "../src/desktop/desktop-supervisor.js";
 import { parseSha256Sums, resolveExpectedAssetName } from "../src/versions/version-hub.js";
 
 describe("T3AuthBridge Zero-Duplicate Issuance & Browser Locale Sync", () => {
@@ -215,5 +221,27 @@ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  *T3-Code-0.1.1
     expect(parseSha256Sums(sums, "T3-Code-0.1.12-amd64.deb")).toBe(
       "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     );
+  });
+
+  it("round-trips Chromium/Electron libsecret os_crypt v11 catalog encryption and GNOME keyring INI", () => {
+    const secret = "ChOBTBm4xw6Ofqe53rZ5iQ==";
+    const ini = buildPreseededKeyringIni(secret);
+    expect(extractLibsecretFromKeyringIni(ini)).toBe(secret);
+
+    const sampleCatalog = JSON.stringify({
+      schemaVersion: 1,
+      targets: [
+        {
+          _tag: "BearerConnectionTarget",
+          environmentId: "env-123",
+          label: "Local Workspace",
+          connectionId: "bearer:env-123:http://127.0.0.1:3773",
+        },
+      ],
+    });
+    const encrypted = encryptLibsecretOsCryptV11(sampleCatalog, secret);
+    expect(Buffer.from(encrypted, "base64").subarray(0, 3).toString("ascii")).toBe("v11");
+    expect(decryptLibsecretOsCryptV11(encrypted, secret)).toBe(sampleCatalog);
+    expect(decryptLibsecretOsCryptV11(encrypted, "wrong-secret")).not.toBe(sampleCatalog);
   });
 });

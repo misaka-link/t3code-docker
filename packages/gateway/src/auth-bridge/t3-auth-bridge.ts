@@ -188,6 +188,111 @@ export class T3AuthBridge {
   }
 
   /**
+   * Exchanges a freshly minted one-time pairing credential directly against loopback `/oauth/token`
+   * (RFC 8693 form-urlencoded) so `DesktopSupervisor` can pre-seed an encrypted `connection-catalog.json`
+   * before launching Electron — completely eliminating the interactive "Add the backend at ...?" modal.
+   */
+  public async bootstrapVncDesktopBearerSession(
+    loopbackUpstreamUrl: string,
+  ): Promise<
+    | { readonly status: "reused" }
+    | {
+        readonly status: "minted";
+        readonly environmentId: string;
+        readonly label: string;
+        readonly httpBaseUrl: string;
+        readonly wsBaseUrl: string;
+        readonly bearerToken: string;
+      }
+  > {
+    const catalogPath = path.join(
+      this.gatewayEnv.T3CODE_HOME,
+      "userdata",
+      "connection-catalog.json",
+    );
+    const savedEnvPath = path.join(
+      this.gatewayEnv.T3CODE_HOME,
+      "userdata",
+      "saved-environments.json",
+    );
+    const hasSavedFile = (await fileExists(catalogPath)) || (await fileExists(savedEnvPath));
+    const sessions = await this.listSessions();
+    const activeDesktopSessions = sessions.filter((s) => s.label === VNC_DESKTOP_SESSION_LABEL);
+
+    if (hasSavedFile && activeDesktopSessions.length === 1) {
+      return { status: "reused" };
+    }
+
+    for (const stale of activeDesktopSessions) {
+      await this.revokeSession(stale.id).catch(() => undefined);
+    }
+    const pairings = await this.listPairings();
+    for (const p of pairings) {
+      if (p.label === VNC_DESKTOP_SESSION_LABEL) {
+        await this.revokePairing(p.id).catch(() => undefined);
+      }
+    }
+
+    const cleanHttpBase = loopbackUpstreamUrl.replace(/\/$/, "");
+    const created = await this.createPairingCredential({
+      label: VNC_DESKTOP_SESSION_LABEL,
+      ttl: "10m",
+      baseUrl: cleanHttpBase,
+    });
+    if (!created.rawToken) {
+      throw new Error("Missing raw bootstrap token from `t3 auth pairing create`");
+    }
+
+    const descRes = await fetch(`${cleanHttpBase}/.well-known/t3/environment`, {
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!descRes.ok) {
+      throw new Error(`Descriptor probe failed with HTTP ${descRes.status}`);
+    }
+    const desc = (await descRes.json()) as { environmentId?: string; label?: string };
+    if (!desc.environmentId) {
+      throw new Error("Descriptor missing environmentId");
+    }
+
+    const tokenForm = new URLSearchParams({
+      grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+      subject_token: created.rawToken,
+      subject_token_type: "urn:t3:params:oauth:token-type:environment-bootstrap",
+      requested_token_type: "urn:ietf:params:oauth:token-type:access_token",
+      client_label: VNC_DESKTOP_SESSION_LABEL,
+      client_device_type: "desktop",
+      client_os: "linux",
+    });
+
+    const tokenRes = await fetch(`${cleanHttpBase}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: tokenForm.toString(),
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!tokenRes.ok) {
+      throw new Error(`OAuth token exchange failed with HTTP ${tokenRes.status}`);
+    }
+    const tokenPayload = (await tokenRes.json()) as { access_token?: string };
+    if (!tokenPayload.access_token) {
+      throw new Error("OAuth token exchange response missing access_token");
+    }
+
+    const parsedBase = new URL(cleanHttpBase);
+    const wsProtocol = parsedBase.protocol === "https:" ? "wss:" : "ws:";
+    const wsBaseUrl = `${wsProtocol}//${parsedBase.host}${parsedBase.pathname === "/" ? "" : parsedBase.pathname}`;
+
+    return {
+      status: "minted",
+      environmentId: desc.environmentId,
+      label: desc.label || "Local Workspace",
+      httpBaseUrl: cleanHttpBase,
+      wsBaseUrl,
+      bearerToken: tokenPayload.access_token,
+    };
+  }
+
+  /**
    * Idempotently returns an unexpired manual pairing link for mobile/external desktop QR scan,
    * revoking the previous unused token first when `forceRegenerate` is requested.
    */
@@ -307,7 +412,7 @@ export class T3AuthBridge {
     readonly label: string;
     readonly ttl: string;
     readonly baseUrl: string;
-  }): Promise<{ id?: string; redirectPath: string; fullUrl?: string }> {
+  }): Promise<{ id?: string; redirectPath: string; fullUrl?: string; rawToken?: string }> {
     const res = await this.execAuth([
       "pairing",
       "create",
@@ -336,7 +441,7 @@ export class T3AuthBridge {
       (typeof parsed?.url === "string" && parsed.url) ||
       (typeof parsed?.pairingUrl === "string" && parsed.pairingUrl) ||
       undefined;
-    const rawToken =
+    let rawToken =
       (typeof parsed?.credential === "string" && parsed.credential) ||
       (typeof parsed?.token === "string" && parsed.token) ||
       (typeof parsed?.secret === "string" && parsed.secret) ||
@@ -345,10 +450,19 @@ export class T3AuthBridge {
     if (rawUrl) {
       try {
         const u = new URL(rawUrl);
+        if (!rawToken) {
+          const hashParams = new URLSearchParams(u.hash.replace(/^#/, ""));
+          rawToken =
+            hashParams.get("token") ||
+            u.searchParams.get("token") ||
+            u.searchParams.get("pairingCode") ||
+            undefined;
+        }
         return {
           ...(id ? { id } : {}),
           redirectPath: `${u.pathname}${u.search}${u.hash}`,
           fullUrl: rawUrl,
+          ...(rawToken ? { rawToken } : {}),
         };
       } catch {
         // Fallback below
@@ -361,6 +475,7 @@ export class T3AuthBridge {
         ...(id ? { id } : {}),
         redirectPath,
         fullUrl: `${input.baseUrl.replace(/\/$/, "")}${redirectPath}`,
+        rawToken,
       };
     }
 
