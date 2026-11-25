@@ -5,7 +5,6 @@ import {
   ConnectPreferencesRequestSchema,
   ConnectToggleRequestSchema,
   CreateSnapshotRequestSchema,
-  CustomAiGatewaySchema,
   DesktopActionRequestSchema,
   DesktopConfigSchema,
   GATEWAY_API_PREFIX,
@@ -439,7 +438,7 @@ export function registerGatewayApiRoutes(app: FastifyInstance, services: Gateway
     return desktopSupervisor.updateConfig(patch);
   });
 
-  // Providers, Custom AI Gateways, Browser MCP & Mise Toolchains
+  // Providers, Browser MCP & Mise Toolchains
   app.get(`${GATEWAY_API_PREFIX}/providers`, async (req, reply) => {
     if (!(await requireAdmin(req, reply))) return;
     return providerService.getOverview();
@@ -456,18 +455,6 @@ export function registerGatewayApiRoutes(app: FastifyInstance, services: Gateway
     const payload = req.body as { workerEnv?: unknown; restartServer?: boolean };
     const parsedEnv = WorkerEnvConfigSchema.parse(payload.workerEnv ?? {});
     return providerService.updateWorkerEnv(parsedEnv, payload.restartServer !== false);
-  });
-
-  app.post(`${GATEWAY_API_PREFIX}/providers/gateways`, async (req, reply) => {
-    if (!(await requireAdmin(req, reply))) return;
-    const gw = CustomAiGatewaySchema.parse(req.body);
-    return providerService.upsertAiGateway(gw);
-  });
-
-  app.delete(`${GATEWAY_API_PREFIX}/providers/gateways/:id`, async (req, reply) => {
-    if (!(await requireAdmin(req, reply))) return;
-    const { id } = req.params as { id: string };
-    return providerService.deleteAiGateway(id);
   });
 
   app.post(`${GATEWAY_API_PREFIX}/providers/browser-mcp`, async (req, reply) => {

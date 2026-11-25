@@ -2,7 +2,6 @@ import {
   GATEWAY_API_PREFIX,
   type BootstrapResponse,
   type ConnectStatus,
-  type CustomAiGateway,
   type DesktopConfig,
   type DesktopStatus,
   type GatewayPersistedConfig,
@@ -174,17 +173,6 @@ export const gatewayApi = {
     requestJson<ProvidersOverview>("/providers/env", {
       method: "PUT",
       body: JSON.stringify({ workerEnv, restartServer }),
-    }),
-
-  upsertAiGateway: (gw: CustomAiGateway) =>
-    requestJson<ProvidersOverview>("/providers/gateways", {
-      method: "POST",
-      body: JSON.stringify(gw),
-    }),
-
-  deleteAiGateway: (id: string) =>
-    requestJson<ProvidersOverview>(`/providers/gateways/${encodeURIComponent(id)}`, {
-      method: "DELETE",
     }),
 
   syncBrowserMcp: (desktopBrowserMcp: boolean, headlessPlaywrightMcp: boolean) =>

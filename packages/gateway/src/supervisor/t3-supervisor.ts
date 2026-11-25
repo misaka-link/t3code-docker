@@ -199,7 +199,6 @@ export class T3ProcessSupervisor {
     await this.detectInstalledVersion();
     const bin = await resolveT3Binary(this.gatewayEnv);
     const args = [
-      "serve",
       "--mode",
       "web",
       "--host",
@@ -305,6 +304,15 @@ export class T3ProcessSupervisor {
       const cookieName = body.auth?.sessionCookieName ?? body.sessionCookieName;
       if (typeof cookieName === "string" && cookieName.length > 0) {
         this.sessionCookieName = cookieName;
+      } else if (!this.sessionCookieName) {
+        const authRes = await fetch(`${this.upstreamUrl}/api/auth/session`).catch(() => null);
+        if (authRes?.ok) {
+          const authBody = (await authRes.json().catch(() => ({}))) as EnvironmentDescriptor;
+          const resolvedCookie = authBody.auth?.sessionCookieName ?? authBody.sessionCookieName;
+          if (typeof resolvedCookie === "string" && resolvedCookie.length > 0) {
+            this.sessionCookieName = resolvedCookie;
+          }
+        }
       }
 
       if (this.state !== "healthy") {

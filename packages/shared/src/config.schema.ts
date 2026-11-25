@@ -66,18 +66,6 @@ export const WorkerEnvConfigSchema = z.object({
 });
 export type WorkerEnvConfig = z.infer<typeof WorkerEnvConfigSchema>;
 
-export const CustomAiGatewaySchema = z.object({
-  id: z.string().min(1).max(64),
-  name: z.string().min(1).max(80),
-  protocol: z.enum(["openai", "anthropic"]),
-  baseUrl: z.string().url(),
-  apiKey: z.string().min(1),
-  defaultModel: z.string().default(""),
-  targets: z.array(z.enum(["claude", "codex", "opencode", "pi", "grok"])).min(1),
-  enabled: z.boolean().default(true),
-});
-export type CustomAiGateway = z.infer<typeof CustomAiGatewaySchema>;
-
 const BaseGatewayPersistedConfigSchema = z.object({
   adminPath: CustomRoutePathSchema.default("/admin"),
   vncPath: CustomRoutePathSchema.default("/vnc"),
@@ -89,7 +77,6 @@ const BaseGatewayPersistedConfigSchema = z.object({
   releaseBaseUrl: z.string().default(""),
   desktop: DesktopConfigSchema.default({}),
   workerEnv: WorkerEnvConfigSchema.default({}),
-  aiGateways: z.array(CustomAiGatewaySchema).default([]),
 });
 
 export const GatewayPersistedConfigSchema = BaseGatewayPersistedConfigSchema.refine(

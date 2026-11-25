@@ -61,7 +61,6 @@ export interface AgentProviderCatalogItem {
   readonly binary: string;
   readonly npmPackage?: string;
   readonly installHint: string;
-  readonly supportsCustomGateway: boolean;
   readonly defaultPreinstall: boolean;
 }
 
@@ -72,7 +71,6 @@ export const AGENT_PROVIDER_CATALOG: readonly AgentProviderCatalogItem[] = [
     binary: "claude",
     npmPackage: "@anthropic-ai/claude-code",
     installHint: "claude auth login",
-    supportsCustomGateway: true,
     defaultPreinstall: true,
   },
   {
@@ -81,7 +79,6 @@ export const AGENT_PROVIDER_CATALOG: readonly AgentProviderCatalogItem[] = [
     binary: "codex",
     npmPackage: "@openai/codex",
     installHint: "codex login",
-    supportsCustomGateway: true,
     defaultPreinstall: true,
   },
   {
@@ -90,7 +87,6 @@ export const AGENT_PROVIDER_CATALOG: readonly AgentProviderCatalogItem[] = [
     binary: "opencode",
     npmPackage: "opencode-ai",
     installHint: "opencode auth login",
-    supportsCustomGateway: true,
     defaultPreinstall: true,
   },
   {
@@ -99,7 +95,6 @@ export const AGENT_PROVIDER_CATALOG: readonly AgentProviderCatalogItem[] = [
     binary: "agy",
     npmPackage: "@google/gemini-cli",
     installHint: "Sign in via T3 Providers or VNC browser",
-    supportsCustomGateway: false,
     defaultPreinstall: false,
   },
   {
@@ -108,7 +103,6 @@ export const AGENT_PROVIDER_CATALOG: readonly AgentProviderCatalogItem[] = [
     binary: "pi",
     npmPackage: "@mariozechner/pi-coding-agent",
     installHint: "pi login",
-    supportsCustomGateway: true,
     defaultPreinstall: false,
   },
   {
@@ -117,7 +111,6 @@ export const AGENT_PROVIDER_CATALOG: readonly AgentProviderCatalogItem[] = [
     binary: "grok",
     npmPackage: "@vibe-kit/grok-cli",
     installHint: "Configure XAI_API_KEY",
-    supportsCustomGateway: true,
     defaultPreinstall: false,
   },
 ] as const;

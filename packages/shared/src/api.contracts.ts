@@ -6,7 +6,6 @@ import {
   THEME_MODES,
 } from "./constants.js";
 import {
-  CustomAiGatewaySchema,
   CustomRoutePathSchema,
   DesktopConfigSchema,
   WorkerEnvConfigSchema,
@@ -205,7 +204,6 @@ export const ProvidersOverviewSchema = z.object({
       installed: z.boolean(),
       version: z.string().nullable(),
       installHint: z.string(),
-      supportsCustomGateway: z.boolean(),
     }),
   ),
   toolchains: z.array(
@@ -219,11 +217,6 @@ export const ProvidersOverviewSchema = z.object({
     }),
   ),
   workerEnv: WorkerEnvConfigSchema,
-  aiGateways: z.array(
-    CustomAiGatewaySchema.omit({ apiKey: true }).extend({
-      apiKeyMasked: z.string(),
-    }),
-  ),
   desktopBrowserMcpEnabled: z.boolean(),
   headlessPlaywrightMcpEnabled: z.boolean(),
   busyTask: z.string().nullable(),

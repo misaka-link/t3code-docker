@@ -39,15 +39,25 @@ if [ "$(id -u)" = "0" ]; then
     "$CODER_HOME/.config" \
     "$T3_WORKSPACE"
 
-  # 4. Seed bundled T3 Code release into persistent volume on first start
+  # 4. Seed bundled T3 Code release into persistent volume (and self-heal any broken slot launcher)
   if [ -d "/opt/t3-seed" ] && [ -f "/opt/t3-seed/.seed-version" ]; then
     seed_ver="$(cat /opt/t3-seed/.seed-version)"
     target_slot="$T3CODE_HOME/runtime/versions/$seed_ver"
+    needs_seed=0
     if [ ! -f "$target_slot/.install-complete" ]; then
+      needs_seed=1
+    elif [ -f "$target_slot/t3-server-launcher" ] && ! "$target_slot/t3-server-launcher" --version >/dev/null 2>&1; then
+      needs_seed=1
+    elif [ ! -f "$target_slot/t3-server-launcher" ] && [ ! -x "$target_slot/t3" ]; then
+      needs_seed=1
+    fi
+
+    if [ "$needs_seed" = "1" ]; then
+      rm -rf "$target_slot"
       cp -a "/opt/t3-seed/slot" "$target_slot"
       printf '%s\n' "$seed_ver" > "$target_slot/.install-complete"
     fi
-    if [ ! -L "$T3CODE_HOME/runtime/current" ]; then
+    if [ ! -L "$T3CODE_HOME/runtime/current" ] || [ ! -e "$T3CODE_HOME/runtime/current" ]; then
       ln -sfn "$target_slot" "$T3CODE_HOME/runtime/current"
     fi
   fi

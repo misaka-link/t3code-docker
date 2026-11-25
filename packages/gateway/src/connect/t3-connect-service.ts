@@ -316,29 +316,49 @@ export class T3ConnectService {
       });
       if (res.code !== 0) return [];
       const parsed = parseJsonFromCliStdout<unknown>(res.stdout);
-      const arr = Array.isArray(parsed)
-        ? parsed
-        : parsed && typeof parsed === "object" && Array.isArray((parsed as { devices?: unknown }).devices)
-          ? (parsed as { devices: unknown[] }).devices
-          : [];
-      return arr.flatMap((raw) => {
-        if (!raw || typeof raw !== "object") return [];
-        const d = raw as Record<string, unknown>;
-        const id = String(d.id ?? d.code ?? "");
-        if (!id) return [];
-        const code = typeof d.code === "string" ? d.code : undefined;
-        const createdAt = typeof d.createdAt === "string" ? d.createdAt : undefined;
-        const status: "pending" | "approved" = d.status === "pending" ? "pending" : "approved";
+      const mapItems = (items: unknown[], defaultStatus: "pending" | "approved") =>
+        items.flatMap((raw) => {
+          if (!raw || typeof raw !== "object") return [];
+          const d = raw as Record<string, unknown>;
+          const id = String(d.id ?? d.pairingLinkId ?? d.proofKeyThumbprint ?? d.code ?? "");
+          if (!id) return [];
+          const code = typeof d.code === "string" ? d.code : undefined;
+          const createdAt = typeof d.createdAt === "string" ? d.createdAt : undefined;
+          const status: "pending" | "approved" =
+            d.status === "pending"
+              ? "pending"
+              : d.status === "approved"
+                ? "approved"
+                : defaultStatus;
+          return [
+            {
+              id,
+              ...(code ? { code } : {}),
+              label: typeof d.label === "string" ? d.label : id,
+              status,
+              ...(createdAt ? { createdAt } : {}),
+            },
+          ];
+        });
+
+      if (Array.isArray(parsed)) {
+        return mapItems(parsed, "approved");
+      }
+      if (parsed && typeof parsed === "object") {
+        const obj = parsed as {
+          devices?: unknown;
+          waiting?: unknown;
+          trusted?: unknown;
+        };
+        if (Array.isArray(obj.devices)) {
+          return mapItems(obj.devices, "approved");
+        }
         return [
-          {
-            id,
-            ...(code ? { code } : {}),
-            label: typeof d.label === "string" ? d.label : id,
-            status,
-            ...(createdAt ? { createdAt } : {}),
-          },
+          ...(Array.isArray(obj.waiting) ? mapItems(obj.waiting, "pending") : []),
+          ...(Array.isArray(obj.trusted) ? mapItems(obj.trusted, "approved") : []),
         ];
-      });
+      }
+      return [];
     } catch {
       return [];
     }

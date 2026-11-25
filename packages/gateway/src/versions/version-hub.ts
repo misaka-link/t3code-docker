@@ -353,54 +353,46 @@ export class VersionHubService {
   }
 
   /**
-   * Creates a clean `t3-server-launcher` inside an unpacked `.deb` slot that runs the bundled
-   * `server.asar` while immediately deleting `ELECTRON_RUN_AS_NODE` inside a bootstrapper
-   * so child shells in `/workspace` never inherit it.
+   * Creates a clean `t3-server-launcher` inside an unpacked `.deb` slot matching T3's official
+   * `DesktopCliShim.ts` (`direct` mode) across all channels (`T3 Code (Beta)`, `T3 Code (Nightly)`, `T3 Code`).
    */
   private async createCleanDesktopServerLauncher(unpackedRoot: string): Promise<void> {
-    const appFolderCandidates = [
-      path.join(unpackedRoot, "opt", "T3 Code"),
-      path.join(unpackedRoot, "opt", "T3 Code (Nightly)"),
-    ];
+    const optRoot = path.join(unpackedRoot, "opt");
     let appDir: string | null = null;
-    let exeName = "t3-code";
-    for (const dir of appFolderCandidates) {
-      if (await fileExists(path.join(dir, "t3-code"))) {
-        appDir = dir;
-        exeName = "t3-code";
-        break;
+    let exeName = "t3code";
+
+    const entries = await fs.readdir(optRoot, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const dir = path.join(optRoot, entry.name);
+      for (const candidateExe of ["t3code", "t3-code", "t3-code-nightly"]) {
+        if (await fileExists(path.join(dir, candidateExe))) {
+          appDir = dir;
+          exeName = candidateExe;
+          break;
+        }
       }
-      if (await fileExists(path.join(dir, "t3-code-nightly"))) {
-        appDir = dir;
-        exeName = "t3-code-nightly";
-        break;
-      }
+      if (appDir) break;
     }
-    if (!appDir) return;
+    if (!appDir) {
+      throw new Error("Unpacked .deb does not contain an executable under opt/*");
+    }
 
-    const bootstrapMjs = path.join(unpackedRoot, "bootstrap-t3-server.mjs");
-    const serverEntryCandidates = [
-      path.join(appDir, "resources", "app.asar", "apps", "server", "dist", "bin.mjs"),
-      path.join(appDir, "resources", "server.asar", "apps", "server", "dist", "bin.mjs"),
-    ];
-
-    const bootstrapContent = `// Scrubs Electron Node-mode env vars before loading T3 Server so Agent terminals stay 100% clean.
-delete process.env.ELECTRON_RUN_AS_NODE;
-delete process.env.T3CODE_DESKTOP_CLI_LAUNCHER;
-import { pathToFileURL } from "node:url";
-import fs from "node:fs";
-const candidates = ${JSON.stringify(serverEntryCandidates)};
-const entry = candidates.find((p) => fs.existsSync(p)) ?? candidates[0];
-await import(pathToFileURL(entry).href);
-`;
-    await writeFileAtomic(bootstrapMjs, bootstrapContent, 0o644);
+    const hasServerAsar = await fileExists(path.join(appDir, "resources", "server.asar"));
+    const asarName = hasServerAsar ? "server.asar" : "app.asar";
+    const relApp = path.posix.join("opt", path.basename(appDir));
+    const relExe = path.posix.join(relApp, exeName);
+    const relEntry = path.posix.join(relApp, "resources", asarName, "apps/server/dist/bin.mjs");
 
     const launcherPath = path.join(unpackedRoot, "t3-server-launcher");
-    const exeFull = path.join(appDir, exeName);
-    const launcherSh = `#!/bin/sh
-export ELECTRON_RUN_AS_NODE=1
-exec "${exeFull}" "${bootstrapMjs}" "$@"
-`;
+    const launcherSh = [
+      "#!/bin/sh",
+      'slot_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"',
+      'export T3CODE_CLI_PATH="${slot_dir}/t3-server-launcher"',
+      "export ELECTRON_RUN_AS_NODE=1",
+      `exec "\${slot_dir}/${relExe}" "\${slot_dir}/${relEntry}" "$@"`,
+      "",
+    ].join("\n");
     await writeFileAtomic(launcherPath, launcherSh, 0o755);
   }
 

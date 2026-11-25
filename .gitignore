@@ -12,6 +12,9 @@ data/
 workspace/*
 !workspace/.gitkeep
 .staging/
+.local-test/
+.agents/
+.agent/
 
 # Environment & secrets
 .env

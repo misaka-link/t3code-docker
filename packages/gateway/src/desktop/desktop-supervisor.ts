@@ -176,12 +176,14 @@ export class DesktopSupervisor {
 
     const cfg = this.configStore.get().desktop;
     const localeBundle = await this.resolveCurrentLocaleBundle();
-    const userDataDir = path.join(this.gatewayEnv.CODER_HOME, ".config", "chromium");
-    await fs.mkdir(userDataDir, { recursive: true });
+    // Dedicated non-default profile path required by Chromium 136+ to allow --remote-debugging-port;
+    // do NOT mkdir as root here so Chromium creates it owned by `coder:coder` cleanly.
+    const userDataDir = path.join(this.gatewayEnv.CODER_HOME, ".config", "t3-chromium");
 
     const args = [
       "--no-sandbox",
       "--disable-dev-shm-usage",
+      "--password-store=basic",
       "--no-first-run",
       "--no-default-browser-check",
       `--user-data-dir=${userDataDir}`,
@@ -335,20 +337,19 @@ export class DesktopSupervisor {
     if (this.gatewayEnv.T3_DESKTOP_BIN_PATH && (await fileExists(this.gatewayEnv.T3_DESKTOP_BIN_PATH))) {
       return this.gatewayEnv.T3_DESKTOP_BIN_PATH;
     }
-    const candidates = [
-      path.join(this.gatewayEnv.T3CODE_HOME, "runtime", "current", "opt", "T3 Code", "t3-code"),
-      path.join(
-        this.gatewayEnv.T3CODE_HOME,
-        "runtime",
-        "current",
-        "opt",
-        "T3 Code (Nightly)",
-        "t3-code-nightly",
-      ),
-      "/opt/T3 Code/t3-code",
+    const optRoots = [
+      path.join(this.gatewayEnv.T3CODE_HOME, "runtime", "current", "opt"),
+      "/opt",
     ];
-    for (const candidate of candidates) {
-      if (await fileExists(candidate)) return candidate;
+    for (const optRoot of optRoots) {
+      const dirs = await fs.readdir(optRoot, { withFileTypes: true }).catch(() => []);
+      for (const entry of dirs) {
+        if (!entry.isDirectory() || !entry.name.toLowerCase().startsWith("t3 code")) continue;
+        for (const exe of ["t3code", "t3-code", "t3-code-nightly"]) {
+          const candidate = path.join(optRoot, entry.name, exe);
+          if (await fileExists(candidate)) return candidate;
+        }
+      }
     }
     return null;
   }

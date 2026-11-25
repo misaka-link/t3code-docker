@@ -198,10 +198,10 @@ sequenceDiagram
   - 对接 `t3 auth connect-device list / approve / revoke`，在控制台直接审批或吊销新接入手机/设备；
   - 提供独立危险操作「彻底退出并清除账号授权（`t3 connect logout`）」。
 
-### 4.6 `ProviderToolchainService`（Agent 生态、中转网关与 `mise` 工具链）
-- **全生态 Agent CLI 管理**：内置 `Claude Code`、`Codex`、`OpenCode`、`Antigravity`、`Cursor`、`Pi`、`Grok`、`Muse Code` 清单。統一安装于持久化卷 `/data/providers`（规避闭源 CLI 镜像预打包协议限制），支持 `T3_PREINSTALL=core|none|all` 首次启动后台自动安装，以及控制台一键安装、升级、卸载与版本探测。
-- **自定义 AI Gateway / 中转站接入**：可视化配置第三方兼容网关（NewAPI / OneAPI / CLIProxyAPI / LiteLLM / OpenRouter），支持容器内一键测速与模型列表探测，自动安全写入对应 Agent 配置文件；统一管理出站代理（`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`）与常用 API Key 环境变量（仅向 `coder` 工作平面注入）。
-- **`mise` 多语言工具链面板**：基于底座内置的 `mise` 与 `uv`，在控制台提供 `Go`、`Rust`、`Bun`、`Deno`、`glab` (GitLab)、`tea` (Gitea)、`fj` (Forgejo) 的状态查看与按需一键持久化安装。
+### 4.6 `ProviderToolchainService`（Agent 生态与 `mise` 工具链）
+- **全生态 Agent CLI 管理**：内置 `Claude Code`、`Codex`、`OpenCode`、`Antigravity`、`Pi`、`Grok` 清单。统一安装于持久化卷 `/data/providers`（规避闭源 CLI 镜像预打包协议限制），支持 `T3_PREINSTALL=core|none|all` 首次启动后台自动安装，以及控制台一键安装、升级、卸载与版本探测。
+- **工作平面出站代理隔离注入**：统一管理出站代理（`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`），仅向 `coder` 工作平面注入并与网关凭据严格物理隔离。
+- **`mise` 多语言工具链面板**：基于底座内置的 `mise` 与 `uv`，在控制台提供 `Go`、`Rust`、`Bun`、`Deno`、`glab` (GitLab)、`tea` (Gitea) 的状态查看与按需一键持久化安装。
 
 ### 4.7 `SnapshotService`（SQLite 安全快照与防呆还原）
 - **双粒度快照**：
@@ -340,7 +340,7 @@ t3code-docker/
 │   │   │   ├── versions/              # VersionHubService（Release 探测、SHA256、原子切换与自动回滚）
 │   │   │   ├── desktop/               # DesktopSupervisor（按需 Xvfb/VNC、空闲休眠、桌面端挂载）
 │   │   │   ├── connect/               # T3ConnectService（设备码流解析、unlink/link 开关、设备审批）
-│   │   │   ├── providers/             # ProviderToolchainService（Agent CLI、中转网关、mise 工具链）
+│   │   │   ├── providers/             # ProviderToolchainService（Agent CLI、浏览器 MCP、mise 工具链）
 │   │   │   ├── snapshots/             # SnapshotService（SQLite 安全备份、归档安全校验与停服还原）
 │   │   │   └── routes/                # 按领域拆分的 `/_t3gw/api/*` 路由控制器
 │   │   └── test/                      # 网关各模块单元与集成测试
@@ -356,7 +356,7 @@ t3code-docker/
 │               ├── VncWakePage.tsx    # 桌面按需唤醒过渡页
 │               ├── OverviewPage.tsx   # 核心运行状态、快捷控制、SSE 日志与 Doctor 维护
 │               ├── VersionsPage.tsx   # Stable/Nightly 更新、缓存版本秒切与回滚
-│               ├── ProvidersPage.tsx  # Agent CLI 一键管理、AI 中转网关、mise 工具链
+│               ├── ProvidersPage.tsx  # Agent CLI 一键管理、浏览器 MCP、mise 工具链
 │               ├── ConnectPage.tsx    # T3 Connect 开关/设备码绑定/设备审批、扫码配对与网关安全路径
 │               ├── DesktopPage.tsx    # VNC 桌面启停、分辨率、自动休眠与浏览器控制
 │               └── SnapshotsPage.tsx  # 快照创建、导出导入、配置/全量安全还原
@@ -364,7 +364,7 @@ t3code-docker/
 │   ├── Dockerfile                     # 多阶段构建（gateway-builder -> base-dev -> headless / full）
 │   ├── entrypoint.sh                  # 极简权限初始化、销毁敏感 env、降权启动网关
 │   └── scripts/
-│       └── bootstrap-t3-server.mjs    # 剥离 ELECTRON_RUN_AS_NODE 后干净引导 server.asar
+│       └── verify-deb-sha512.mjs      # 官方 .deb SHA-512 构建校验脚本
 ├── docker-compose.yml                 # 默认完整版编排（含按需 VNC 桌面）
 ├── docker-compose.headless.yml        # 无桌面满血研发版编排
 └── .env.example                       # 详尽中文注释的环境变量模板
@@ -404,9 +404,9 @@ t3code-docker/
   - `POST /_t3gw/api/v1/desktop/action` — `start | stop | restart | launch-t3-desktop | launch-chromium`
   - `PUT  /_t3gw/api/v1/desktop/config` — 更新分辨率与空闲自动休眠分钟数
 - **Providers 与工具链 (`/providers`)**
-  - `GET  /_t3gw/api/v1/providers` — 8 大 Agent CLI 与 `mise` 工具链安装状态及版本、当前代理与自定义网关配置
-  - `POST /_t3gw/api/v1/providers/packages` — 异步安装/升级/卸载指定 Agent CLI 或 `mise` 工具（SSE 推送安装日志）
-  - `PUT  /_t3gw/api/v1/providers/env` — 更新 `coder` 工作平面的代理与自定义 AI Gateway / API Keys 配置
+  - `GET  /_t3gw/api/v1/providers` — Agent CLI 与 `mise` 工具链安装状态及版本、浏览器 MCP 与当前代理配置
+  - `POST /_t3gw/api/v1/providers/packages` — 安装/升级/卸载指定 Agent CLI 或 `mise` 工具
+  - `PUT  /_t3gw/api/v1/providers/env` — 更新 `coder` 工作平面出站代理配置
 - **快照与还原 (`/snapshots`)**
   - `GET  /_t3gw/api/v1/snapshots` — 本地快照列表、类型 (`config`/`full`)、体积、对应 T3 版本
   - `POST /_t3gw/api/v1/snapshots` — 创建新快照
@@ -437,11 +437,11 @@ t3code-docker/
 
 ### Phase 4：按需虚拟桌面共生、Providers 工具链与安全快照
 - 实现 `DesktopSupervisor`（Xvfb/openbox/x11vnc/websockify 进程组管理、空闲自动休眠、T3 桌面版客户端挂载防抢锁、语言同步）及 `DesktopPage` + `VncWakePage`；
-- 实现 `ProviderToolchainService`（Agent CLI、自定义 AI 中转站配置、`mise` 工具链）及 `ProvidersPage`；
+- 实现 `ProviderToolchainService`（Agent CLI、双轨浏览器 MCP、`mise` 工具链）及 `ProvidersPage`；
 - 实现 `SnapshotService`（SQLite 安全备份、防路径穿越归档校验、独占锁停服还原）及 `SnapshotsPage`。
 - **门禁验收**：Zip-Slip 恶意归档拦截测试、快照还原事务锁测试、桌面空闲休眠状态机测试全部通过。
 
 ### Phase 5：满血底座双变体 Docker 镜像、Compose 编排与端到端真机验收
-- 编写多阶段 `docker/Dockerfile`（共享满血 `base-dev` 含全彩 Emoji 与中日韩字体 -> `headless` / `full` 含 `chromium-l10n`）、双 UID 降权 `entrypoint.sh`、`bootstrap-t3-server.mjs`；
+- 编写多阶段 `docker/Dockerfile`（共享满血 `base-dev` 含全彩 Emoji 与中日韩字体 -> `headless` / `full` 含 `chromium-l10n`）、双 UID 降权 `entrypoint.sh`；
 - 编写 `docker-compose.yml`、`docker-compose.headless.yml`、`.env.example`、GitHub Actions 双架构 (`amd64` + `arm64`) 构建工作流与项目 `README.md`；
 - **门禁验收**：实机构建 `full` 与 `headless` 镜像，验证双 UID 权限边界、`/workspace` 环境变量纯净度、**浏览器 UI 语言随后台中/英切换同步生效、两款镜像下中文与彩色 Emoji 渲染零豆腐块/零黑白降级**、WebUI + VNC 桌面版同时打开实时同步、在线版本升级回滚与重启持久化。

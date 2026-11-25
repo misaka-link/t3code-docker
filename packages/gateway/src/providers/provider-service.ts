@@ -4,7 +4,6 @@ import * as path from "node:path";
 import {
   AGENT_PROVIDER_CATALOG,
   MISE_TOOL_CATALOG,
-  type CustomAiGateway,
   type GatewayEnv,
   type ProvidersOverview,
   type WorkerEnvConfig,
@@ -13,11 +12,6 @@ import type { ConfigStore } from "../config/config-store.js";
 import type { T3ProcessSupervisor } from "../supervisor/t3-supervisor.js";
 import { fileExists, writeFileAtomic } from "../utils/atomic-fs.js";
 import { runWorkerCommand } from "../utils/cli-runner.js";
-
-function maskApiKey(key: string): string {
-  if (key.length <= 8) return "••••••••";
-  return `${key.slice(0, 4)}••••${key.slice(-4)}`;
-}
 
 export class ProviderToolchainService {
   private busyTask: string | null = null;
@@ -80,7 +74,6 @@ export class ProviderToolchainService {
           installed: version !== null,
           version,
           installHint: item.installHint,
-          supportsCustomGateway: item.supportsCustomGateway,
         };
       }),
     );
@@ -103,10 +96,6 @@ export class ProviderToolchainService {
       agents,
       toolchains,
       workerEnv: cfg.workerEnv,
-      aiGateways: cfg.aiGateways.map(({ apiKey, ...rest }) => ({
-        ...rest,
-        apiKeyMasked: maskApiKey(apiKey),
-      })),
       desktopBrowserMcpEnabled: cfg.desktop.enableDesktopBrowserMcp,
       headlessPlaywrightMcpEnabled: this.headlessPlaywrightMcpEnabled,
       busyTask: this.busyTask,
@@ -192,23 +181,6 @@ export class ProviderToolchainService {
     return this.getOverview();
   }
 
-  public async upsertAiGateway(gateway: CustomAiGateway): Promise<ProvidersOverview> {
-    const prev = this.configStore.get().aiGateways;
-    const filtered = prev.filter((g) => g.id !== gateway.id);
-    const nextList = [...filtered, gateway];
-    await this.configStore.update({ aiGateways: nextList });
-    if (gateway.enabled) {
-      await this.applyCustomGatewayToAgentConfigs(gateway);
-    }
-    return this.getOverview();
-  }
-
-  public async deleteAiGateway(id: string): Promise<ProvidersOverview> {
-    const nextList = this.configStore.get().aiGateways.filter((g) => g.id !== id);
-    await this.configStore.update({ aiGateways: nextList });
-    return this.getOverview();
-  }
-
   /**
    * Zero-injection standard MCP wiring for both the Headed VNC Desktop Browser (auto-waking CDP)
    * and optional standalone Headless Playwright MCP.
@@ -266,60 +238,6 @@ export class ProviderToolchainService {
     );
 
     return this.getOverview();
-  }
-
-  private async applyCustomGatewayToAgentConfigs(gw: CustomAiGateway): Promise<void> {
-    if (gw.targets.includes("claude")) {
-      const claudeSettingsPath = path.join(this.gatewayEnv.CODER_HOME, ".claude", "settings.json");
-      let doc: Record<string, unknown> = {};
-      try {
-        doc = JSON.parse(await fs.readFile(claudeSettingsPath, "utf8")) as Record<string, unknown>;
-      } catch {
-        doc = {};
-      }
-      const envObj =
-        doc.env && typeof doc.env === "object" ? { ...(doc.env as Record<string, string>) } : {};
-      envObj.ANTHROPIC_BASE_URL = gw.baseUrl;
-      envObj.ANTHROPIC_AUTH_TOKEN = gw.apiKey;
-      if (gw.defaultModel) {
-        envObj.ANTHROPIC_MODEL = gw.defaultModel;
-      }
-      doc.env = envObj;
-      await writeFileAtomic(claudeSettingsPath, `${JSON.stringify(doc, null, 2)}\n`, 0o600).catch(
-        () => undefined,
-      );
-    }
-
-    if (gw.targets.includes("opencode")) {
-      const ocPath = path.join(
-        this.gatewayEnv.CODER_HOME,
-        ".config",
-        "opencode",
-        "opencode.json",
-      );
-      let doc: Record<string, unknown> = {};
-      try {
-        doc = JSON.parse(await fs.readFile(ocPath, "utf8")) as Record<string, unknown>;
-      } catch {
-        doc = {};
-      }
-      const providers =
-        doc.provider && typeof doc.provider === "object"
-          ? { ...(doc.provider as Record<string, unknown>) }
-          : {};
-      providers[gw.id] = {
-        npm: gw.protocol === "anthropic" ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible",
-        name: gw.name,
-        options: {
-          baseURL: gw.baseUrl,
-          apiKey: gw.apiKey,
-        },
-      };
-      doc.provider = providers;
-      await writeFileAtomic(ocPath, `${JSON.stringify(doc, null, 2)}\n`, 0o600).catch(
-        () => undefined,
-      );
-    }
   }
 
   private async probeBinaryVersion(binary: string): Promise<string | null> {

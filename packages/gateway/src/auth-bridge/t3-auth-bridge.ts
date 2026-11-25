@@ -317,10 +317,12 @@ export class T3AuthBridge {
     const parsed = parseJsonFromCliStdout<Record<string, unknown>>(res.stdout);
     const id = typeof parsed?.id === "string" ? parsed.id : undefined;
     const rawUrl =
+      (typeof parsed?.pairUrl === "string" && parsed.pairUrl) ||
       (typeof parsed?.url === "string" && parsed.url) ||
       (typeof parsed?.pairingUrl === "string" && parsed.pairingUrl) ||
       undefined;
     const rawToken =
+      (typeof parsed?.credential === "string" && parsed.credential) ||
       (typeof parsed?.token === "string" && parsed.token) ||
       (typeof parsed?.secret === "string" && parsed.secret) ||
       undefined;

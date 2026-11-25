@@ -129,10 +129,8 @@ RUN set -eux; \
       groupadd -g 1000 coder && useradd -u 1000 -g 1000 -m -s /bin/bash coder; \
     fi
 
-# 4. Copy compiled Gateway, Console static bundle, MCP wrapper & scripts
-COPY --from=gateway-builder /build /opt/t3-gateway
-COPY docker/scripts/bootstrap-t3-server.mjs /opt/t3-gateway/bootstrap-t3-server.mjs
-COPY docker/scripts/verify-deb-sha512.mjs /opt/t3-gateway/verify-deb-sha512.mjs
+# 4. Copy static helper & entrypoint scripts (gateway bundle copied in leaf stages for optimal layer caching)
+COPY docker/scripts/verify-deb-sha512.mjs /usr/local/share/verify-deb-sha512.mjs
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh
 
@@ -153,7 +151,7 @@ EXPOSE 3080
 HEALTHCHECK --interval=20s --timeout=5s --start-period=25s --retries=3 \
   CMD curl -fsS http://127.0.0.1:${PROXY_PORT}/_t3gw/healthz || exit 1
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "-s", "--", "/usr/local/bin/entrypoint.sh"]
 
 # ------------------------------------------------------------------------------
 # Stage 3A: headless — Full Dev Environment WITHOUT Virtual Desktop / Headed GUI
@@ -174,8 +172,11 @@ RUN set -eux; \
     ver="$(ls -1 /tmp/t3-install/runtime/versions | head -n 1)"; \
     mkdir -p /opt/t3-seed; \
     mv "/tmp/t3-install/runtime/versions/${ver}" /opt/t3-seed/slot; \
+    "/opt/t3-seed/slot/t3" --version; \
     printf '%s\n' "${ver}" > /opt/t3-seed/.seed-version; \
     rm -rf /tmp/t3-install /tmp/t3-bin
+
+COPY --from=gateway-builder /build /opt/t3-gateway
 
 # ------------------------------------------------------------------------------
 # Stage 3B: full (Default :latest) — Adds On-Demand VNC Desktop, Chromium & T3 Desktop
@@ -201,6 +202,10 @@ RUN set -eux; \
       libgtk-3-0t64 \
       libnotify4 \
       libsecret-1-0 \
+      libuuid1 \
+      libxss1 \
+      libxtst6 \
+      xdg-utils \
       chromium \
       chromium-l10n; \
     if [ ! -e /usr/share/novnc/index.html ]; then \
@@ -227,18 +232,28 @@ RUN set -eux; \
     base_url="https://github.com/pingdotgg/t3code/releases/download/v${ver}"; \
     curl -fsSL "${base_url}/${yml_file}" -o /tmp/t3-deb/meta.yml; \
     curl -fsSL "${base_url}/${deb_file}" -o "/tmp/t3-deb/${deb_file}"; \
-    node /opt/t3-gateway/verify-deb-sha512.mjs /tmp/t3-deb/meta.yml "/tmp/t3-deb/${deb_file}" "${deb_file}"; \
+    node /usr/local/share/verify-deb-sha512.mjs /tmp/t3-deb/meta.yml "/tmp/t3-deb/${deb_file}" "${deb_file}"; \
     dpkg-deb -x "/tmp/t3-deb/${deb_file}" /opt/t3-seed/slot; \
-    app_dir="/opt/t3-seed/slot/opt/T3 Code"; \
-    [ -d "${app_dir}" ] || app_dir="/opt/t3-seed/slot/opt/T3 Code (Nightly)"; \
-    exe_path="${app_dir}/t3-code"; \
-    [ -x "${exe_path}" ] || exe_path="${app_dir}/t3-code-nightly"; \
-    entry_mjs="${app_dir}/resources/server.asar/apps/server/dist/bin.mjs"; \
-    [ -f "${entry_mjs}" ] || entry_mjs="${app_dir}/resources/app.asar/apps/server/dist/bin.mjs"; \
+    app_dir="$(find /opt/t3-seed/slot/opt -mindepth 1 -maxdepth 1 -type d | head -n 1)"; \
+    [ -n "${app_dir}" ] && [ -d "${app_dir}" ]; \
+    exe_path=""; \
+    for cand in t3code t3-code t3-code-nightly; do \
+      if [ -x "${app_dir}/${cand}" ]; then exe_path="${app_dir}/${cand}"; break; fi; \
+    done; \
+    [ -n "${exe_path}" ] && [ -x "${exe_path}" ]; \
+    if [ -f "${app_dir}/resources/server.asar" ]; then \
+      asar_name="server.asar"; \
+    else \
+      [ -f "${app_dir}/resources/app.asar" ]; \
+      asar_name="app.asar"; \
+    fi; \
     rel_app="${app_dir#/opt/t3-seed/slot/}"; \
     rel_exe="${exe_path#/opt/t3-seed/slot/}"; \
-    rel_entry="${entry_mjs#/opt/t3-seed/slot/}"; \
-    printf '#!/bin/sh\nslot_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"\nexport ELECTRON_RUN_AS_NODE=1\nexport T3_SERVER_ENTRY_MJS="${slot_dir}/%s"\nexec "${slot_dir}/%s" /opt/t3-gateway/bootstrap-t3-server.mjs "$@"\n' "${rel_entry}" "${rel_exe}" > /opt/t3-seed/slot/t3-server-launcher; \
+    rel_entry="${rel_app}/resources/${asar_name}/apps/server/dist/bin.mjs"; \
+    printf '#!/bin/sh\nslot_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"\nexport T3CODE_CLI_PATH="${slot_dir}/t3-server-launcher"\nexport ELECTRON_RUN_AS_NODE=1\nexec "${slot_dir}/%s" "${slot_dir}/%s" "$@"\n' "${rel_exe}" "${rel_entry}" > /opt/t3-seed/slot/t3-server-launcher; \
     chmod 0755 /opt/t3-seed/slot/t3-server-launcher; \
+    /opt/t3-seed/slot/t3-server-launcher --version; \
     printf '%s\n' "${ver}" > /opt/t3-seed/.seed-version; \
     rm -rf /tmp/t3-deb
+
+COPY --from=gateway-builder /build /opt/t3-gateway

@@ -1,21 +1,15 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Cpu, Download, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Cpu, Download, RefreshCw, Trash2 } from "lucide-react";
 import type { ProvidersOverview } from "@t3-docker/shared";
 import { useUiPreferences } from "../i18n/context";
 import { gatewayApi } from "../lib/api";
-import { Badge, Button, Input, Select, Switch } from "../components/ui";
+import { Badge, Button, Input, Switch } from "../components/ui";
 
 export function ProvidersTab(props: { readonly desktopSupported: boolean }) {
   const { t } = useUiPreferences();
   const [data, setData] = useState<ProvidersOverview | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  // Custom AI Gateway form
-  const [gwName, setGwName] = useState("");
-  const [gwProtocol, setGwProtocol] = useState<"anthropic" | "openai">("anthropic");
-  const [gwUrl, setGwUrl] = useState("");
-  const [gwKey, setGwKey] = useState("");
 
   // Outbound proxy form
   const [httpProxy, setHttpProxy] = useState("");
@@ -51,31 +45,6 @@ export function ProvidersTab(props: { readonly desktopSupported: boolean }) {
       setError(err instanceof Error ? err.message : t.common.error);
     } finally {
       setBusyId(null);
-    }
-  };
-
-  const handleAddGateway = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!gwName || !gwUrl || !gwKey) return;
-    setError(null);
-    try {
-      const id = gwName.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 32) || `gw-${Date.now()}`;
-      const res = await gatewayApi.upsertAiGateway({
-        id,
-        name: gwName,
-        protocol: gwProtocol,
-        baseUrl: gwUrl,
-        apiKey: gwKey,
-        defaultModel: "",
-        targets: gwProtocol === "anthropic" ? ["claude", "opencode"] : ["codex", "opencode"],
-        enabled: true,
-      });
-      setData(res);
-      setGwName("");
-      setGwUrl("");
-      setGwKey("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t.common.error);
     }
   };
 
@@ -250,67 +219,7 @@ export function ProvidersTab(props: { readonly desktopSupported: boolean }) {
         </div>
       </section>
 
-      {/* 4. Custom AI Gateway */}
-      <form onSubmit={handleAddGateway} className="t3-card p-5 space-y-3.5">
-        <h3 className="text-sm font-semibold">{t.providers.aiGatewayTitle}</h3>
-        <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
-          <Input
-            placeholder={t.providers.gwNamePlaceholder}
-            value={gwName}
-            onChange={(e) => setGwName(e.target.value)}
-          />
-          <Select
-            value={gwProtocol}
-            onChange={(e) => setGwProtocol(e.target.value as "anthropic" | "openai")}
-          >
-            <option value="anthropic">Anthropic API</option>
-            <option value="openai">OpenAI Compatible</option>
-          </Select>
-          <Input
-            placeholder={t.providers.gwUrlPlaceholder}
-            value={gwUrl}
-            onChange={(e) => setGwUrl(e.target.value)}
-            className="font-mono"
-          />
-          <Input
-            type="password"
-            placeholder={t.providers.gwKeyPlaceholder}
-            value={gwKey}
-            onChange={(e) => setGwKey(e.target.value)}
-            className="font-mono"
-          />
-        </div>
-        <Button type="submit" size="sm" variant="primary">
-          <Plus className="h-3.5 w-3.5" />
-          {t.providers.addGatewayBtn}
-        </Button>
-
-        {(data?.aiGateways.length ?? 0) > 0 && (
-          <div className="divide-y divide-[var(--border)] pt-2">
-            {data!.aiGateways.map((g) => (
-              <div key={g.id} className="py-2 flex items-center justify-between text-xs">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium">{g.name}</span>
-                  <Badge tone="info">{g.protocol}</Badge>
-                  <span className="font-mono text-[11px] text-[var(--muted-foreground)]">
-                    {g.baseUrl} ({g.apiKeyMasked})
-                  </span>
-                </div>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="danger"
-                  onClick={() => void gatewayApi.deleteAiGateway(g.id).then(setData)}
-                >
-                  <Trash2 className="h-3 w-3" />
-                </Button>
-              </div>
-            ))}
-          </div>
-        )}
-      </form>
-
-      {/* 5. Worker Outbound Proxy */}
+      {/* 4. Worker Outbound Proxy */}
       <form onSubmit={handleSaveProxy} className="t3-card p-5 space-y-3.5">
         <h3 className="text-sm font-semibold">{t.providers.proxySectionTitle}</h3>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
