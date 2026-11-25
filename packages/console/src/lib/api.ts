@@ -52,7 +52,12 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 export const gatewayApi = {
   getBootstrap: () => requestJson<BootstrapResponse>("/bootstrap"),
 
-  completeSetup: (input: { password: string; locale?: "zh-CN" | "en-US"; theme?: "dark" | "light" | "system" }) =>
+  completeSetup: (input: {
+    password: string;
+    locale?: "zh-CN" | "en-US";
+    theme?: "dark" | "light" | "system";
+    environmentLabel?: string;
+  }) =>
     requestJson<{ ok: boolean }>("/auth/setup", {
       method: "POST",
       body: JSON.stringify(input),

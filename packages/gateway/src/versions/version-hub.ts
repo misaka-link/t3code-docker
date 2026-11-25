@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -216,13 +217,16 @@ export class VersionHubService {
   ): Promise<void> {
     const previousTarget = await this.readSymlinkRaw(this.currentLinkPath);
     const previousVersion = await this.readCurrentLinkedVersion();
+    const wasDesktopRunning =
+      Boolean(this.desktopSupervisor?.supported) &&
+      this.desktopSupervisor?.getState() === "running";
 
     let switchedOk = false;
     await this.supervisor.runInMaintenance(
       "updating",
       async () => {
-        if (this.desktopSupervisor?.supported && this.desktopSupervisor.getState() === "running") {
-          await this.desktopSupervisor.stop().catch(() => undefined);
+        if (wasDesktopRunning) {
+          await this.desktopSupervisor?.stop().catch(() => undefined);
         }
         await this.replaceSymlinkAtomic(this.currentLinkPath, targetDir);
         this.supervisor.setActiveVersionHint(targetVersion);
@@ -248,9 +252,16 @@ export class VersionHubService {
         );
         await this.supervisor.waitForHealthy(20_000);
       }
+      if (wasDesktopRunning) {
+        await this.desktopSupervisor?.start().catch(() => undefined);
+      }
       throw new Error(
         `Version ${targetVersion} failed readiness health check within ${Math.round(healthTimeoutMs / 1000)}s and was automatically rolled back.`,
       );
+    }
+
+    if (wasDesktopRunning) {
+      await this.desktopSupervisor?.start().catch(() => undefined);
     }
   }
 
@@ -319,10 +330,12 @@ export class VersionHubService {
         }
       }
 
-      await fs.writeFile(archivePath, buf);
+      await fs.writeFile(archivePath, buf, { mode: 0o644 });
 
       const unpackDir = path.join(stageDir, "unpacked");
       await fs.mkdir(unpackDir, { recursive: true });
+      // Hand stageDir ownership to `coder` before unprivileged `gosu coder dpkg-deb -x` runs
+      await this.chownToCoderIfRoot(stageDir);
 
       if (assetName.endsWith(".deb")) {
         const res = await runWorkerCommand({
@@ -345,11 +358,31 @@ export class VersionHubService {
       }
 
       await writeFileAtomic(path.join(unpackDir, ".install-complete"), `${version}\n`);
+      await this.chownToCoderIfRoot(unpackDir);
       await fs.rm(targetDir, { recursive: true, force: true });
       await fs.rename(unpackDir, targetDir);
     } finally {
       await fs.rm(stageDir, { recursive: true, force: true }).catch(() => undefined);
     }
+  }
+
+  private async chownToCoderIfRoot(targetPath: string): Promise<void> {
+    const coderUser = this.gatewayEnv.CODER_USER;
+    if (
+      process.platform !== "linux" ||
+      !coderUser ||
+      typeof process.getuid !== "function" ||
+      process.getuid() !== 0
+    ) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      const child = spawn("chown", ["-R", `${coderUser}:${coderUser}`, targetPath], {
+        stdio: "ignore",
+      });
+      child.once("close", () => resolve());
+      child.once("error", () => resolve());
+    });
   }
 
   /**

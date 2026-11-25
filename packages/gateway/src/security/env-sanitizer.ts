@@ -1,3 +1,4 @@
+import * as os from "node:os";
 import * as path from "node:path";
 import type { GatewayEnv, WorkerEnvConfig } from "@t3-docker/shared";
 
@@ -75,6 +76,19 @@ export function buildCleanWorkerEnv(input: {
   result.HOME = input.gatewayEnv.CODER_HOME;
   result.T3CODE_HOME = input.gatewayEnv.T3CODE_HOME;
   result.T3CODE_SERVER_BROWSER_SANDBOX = "0";
+  const configuredLabel =
+    input.workerEnv.environmentLabel?.trim() ||
+    input.gatewayEnv.ENVIRONMENT_LABEL ||
+    input.gatewayEnv.T3CODE_ENVIRONMENT_LABEL ||
+    "";
+  if (configuredLabel) {
+    result.T3CODE_ENVIRONMENT_LABEL = configuredLabel;
+  } else if (!result.T3CODE_ENVIRONMENT_LABEL) {
+    const rawHost = os.hostname().trim();
+    if (/^[0-9a-f]{12}$/i.test(rawHost)) {
+      result.T3CODE_ENVIRONMENT_LABEL = "T3 Code Docker";
+    }
+  }
   result.NPM_CONFIG_PREFIX = path.join(input.gatewayEnv.T3GW_PROVIDERS_DIR, "npm-global");
   result.MISE_DATA_DIR = path.join(input.gatewayEnv.T3GW_PROVIDERS_DIR, "mise");
   result.MISE_CONFIG_DIR = path.join(input.gatewayEnv.T3GW_PROVIDERS_DIR, "mise-config");

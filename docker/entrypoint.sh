@@ -52,6 +52,9 @@ if [ "$(id -u)" = "0" ]; then
   if [ ! -e "$CODER_HOME/.local/share/keyrings" ]; then
     ln -s "$T3CODE_HOME/.keyrings" "$CODER_HOME/.local/share/keyrings"
   fi
+  if [ ! -e "$CODER_HOME/workspace" ] && [ ! -L "$CODER_HOME/workspace" ]; then
+    ln -s "$T3_WORKSPACE" "$CODER_HOME/workspace"
+  fi
 
   # 4. Seed bundled T3 Code release into persistent volume (and self-heal any broken slot launcher)
   if [ -d "/opt/t3-seed" ] && [ -f "/opt/t3-seed/.seed-version" ]; then

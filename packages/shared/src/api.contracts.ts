@@ -54,6 +54,7 @@ export const SetupRequestSchema = z.object({
   password: z.string().min(6, "Password must be at least 6 characters").max(128),
   locale: z.enum(SUPPORTED_LOCALES).optional(),
   theme: z.enum(THEME_MODES).optional(),
+  environmentLabel: z.string().trim().max(80).optional(),
 });
 export type SetupRequest = z.infer<typeof SetupRequestSchema>;
 
@@ -261,6 +262,7 @@ export type RestoreSnapshotRequest = z.infer<typeof RestoreSnapshotRequestSchema
 export const UpdateGatewaySettingsRequestSchema = z.object({
   adminPath: CustomRoutePathSchema.optional(),
   vncPath: CustomRoutePathSchema.optional(),
+  environmentLabel: z.string().trim().max(80).optional(),
   locale: z.enum(SUPPORTED_LOCALES).optional(),
   theme: z.enum(THEME_MODES).optional(),
   trustProxy: z.boolean().optional(),

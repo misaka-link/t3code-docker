@@ -7,6 +7,7 @@ services:
     #   dockerfile: docker/Dockerfile
     #   target: full
     container_name: t3code
+    hostname: t3code
     restart: unless-stopped
     init: true
     shm_size: "1gb"
@@ -21,6 +22,7 @@ services:
       - SESSION_SECRET=${SESSION_SECRET:-}
       - ADMIN_PATH=${ADMIN_PATH:-/admin}
       - VNC_PATH=${VNC_PATH:-/vnc}
+      - ENVIRONMENT_LABEL=${ENVIRONMENT_LABEL:-T3 Code Docker}
       - DEFAULT_LOCALE=${DEFAULT_LOCALE:-zh-CN}
       - RELEASE_CHANNEL=${RELEASE_CHANNEL:-stable}
       - PUID=${PUID:-1000}

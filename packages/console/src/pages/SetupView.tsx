@@ -6,6 +6,7 @@ import { Badge, Button, Input, Select, TopLocaleThemeControls } from "../compone
 
 export function SetupView(props: { readonly onCompleted: () => Promise<void> }) {
   const { t, locale, setLocale, theme } = useUiPreferences();
+  const [environmentLabel, setEnvironmentLabel] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -24,7 +25,12 @@ export function SetupView(props: { readonly onCompleted: () => Promise<void> }) 
     }
     setSubmitting(true);
     try {
-      await gatewayApi.completeSetup({ password, locale, theme });
+      await gatewayApi.completeSetup({
+        password,
+        locale,
+        theme,
+        ...(environmentLabel.trim() ? { environmentLabel: environmentLabel.trim() } : {}),
+      });
       await props.onCompleted();
     } catch (err) {
       setError(err instanceof Error ? err.message : t.common.error);
@@ -67,6 +73,16 @@ export function SetupView(props: { readonly onCompleted: () => Promise<void> }) 
                 <option value="zh-CN">简体中文 (默认)</option>
                 <option value="en-US">English</option>
               </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-xs font-medium">{t.setup.envLabelTitle}</label>
+              <Input
+                value={environmentLabel}
+                onChange={(e) => setEnvironmentLabel(e.target.value)}
+                placeholder={t.setup.envLabelPlaceholder}
+                maxLength={80}
+              />
             </div>
 
             <div className="space-y-1.5">

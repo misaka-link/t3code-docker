@@ -51,6 +51,12 @@ export class ConfigStore {
       },
       workerEnv: {
         ...base.workerEnv,
+        ...(!loaded && (this.env.ENVIRONMENT_LABEL || this.env.T3CODE_ENVIRONMENT_LABEL)
+          ? {
+              environmentLabel:
+                this.env.ENVIRONMENT_LABEL ?? this.env.T3CODE_ENVIRONMENT_LABEL ?? "",
+            }
+          : {}),
         ...(this.env.DISABLE_TELEMETRY !== undefined
           ? {
               disableT3Telemetry: this.env.DISABLE_TELEMETRY,

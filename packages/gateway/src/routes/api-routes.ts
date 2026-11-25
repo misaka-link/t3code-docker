@@ -187,11 +187,28 @@ export function registerGatewayApiRoutes(app: FastifyInstance, services: Gateway
     }
     const body = SetupRequestSchema.parse(req.body);
     await authService.setPassword(body.password, false);
-    if (body.locale || body.theme) {
+    const prevEnvLabel = configStore.get().workerEnv.environmentLabel;
+    if (body.locale || body.theme || body.environmentLabel !== undefined) {
       await configStore.update({
         ...(body.locale ? { locale: body.locale } : {}),
         ...(body.theme ? { theme: body.theme } : {}),
+        ...(body.environmentLabel !== undefined
+          ? {
+              workerEnv: {
+                ...configStore.get().workerEnv,
+                environmentLabel: body.environmentLabel,
+              },
+            }
+          : {}),
       });
+    }
+    if (
+      body.environmentLabel !== undefined &&
+      body.environmentLabel !== prevEnvLabel &&
+      supervisor.getState() === "healthy"
+    ) {
+      await supervisor.restart();
+      await desktopSupervisor.syncEnvironmentLabel().catch(() => undefined);
     }
     await desktopSupervisor.syncLocaleFromGateway(configStore.get().locale);
     const issued = authService.issueSessionToken();
@@ -397,6 +414,7 @@ export function registerGatewayApiRoutes(app: FastifyInstance, services: Gateway
   app.put(`${GATEWAY_API_PREFIX}/settings`, async (req, reply) => {
     if (!(await requireAdmin(req, reply))) return;
     const body = UpdateGatewaySettingsRequestSchema.parse(req.body);
+    const prevEnvLabel = configStore.get().workerEnv.environmentLabel;
 
     const updated = await configStore.update({
       ...(body.adminPath ? { adminPath: body.adminPath } : {}),
@@ -407,7 +425,22 @@ export function registerGatewayApiRoutes(app: FastifyInstance, services: Gateway
       ...(body.publicUrl !== undefined ? { publicUrl: body.publicUrl } : {}),
       ...(body.releaseChannel ? { releaseChannel: body.releaseChannel } : {}),
       ...(body.releaseBaseUrl !== undefined ? { releaseBaseUrl: body.releaseBaseUrl } : {}),
+      ...(body.environmentLabel !== undefined
+        ? {
+            workerEnv: {
+              ...configStore.get().workerEnv,
+              environmentLabel: body.environmentLabel,
+            },
+          }
+        : {}),
     });
+
+    if (body.environmentLabel !== undefined && body.environmentLabel !== prevEnvLabel) {
+      if (supervisor.getState() === "healthy") {
+        await supervisor.restart();
+      }
+      await desktopSupervisor.syncEnvironmentLabel().catch(() => undefined);
+    }
 
     if (body.newPassword) {
       await authService.setPassword(body.newPassword, body.revokeAllSessions);

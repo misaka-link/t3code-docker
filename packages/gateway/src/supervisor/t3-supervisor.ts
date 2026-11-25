@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { GatewayEnv, SupervisorState, SupervisorStatus } from "@t3-docker/shared";
 import type { ConfigStore } from "../config/config-store.js";
@@ -11,6 +12,27 @@ import {
   wrapPrivilegeDrop,
 } from "../utils/cli-runner.js";
 import { LogRingBuffer } from "./ring-buffer.js";
+
+export function mergeDefaultT3ServerSettings(
+  existing: Readonly<Record<string, unknown>>,
+  workspaceDir: string,
+): { next: Record<string, unknown>; changed: boolean } {
+  const currentBase =
+    typeof existing.addProjectBaseDirectory === "string"
+      ? existing.addProjectBaseDirectory.trim()
+      : "";
+  const normalizedWorkspace = workspaceDir.trim();
+  if (currentBase.length > 0 || normalizedWorkspace.length === 0) {
+    return { next: { ...existing }, changed: false };
+  }
+  return {
+    next: {
+      ...existing,
+      addProjectBaseDirectory: normalizedWorkspace,
+    },
+    changed: true,
+  };
+}
 
 interface EnvironmentDescriptor {
   readonly environmentId?: string;
@@ -191,11 +213,44 @@ export class T3ProcessSupervisor {
     return this.activeVersion;
   }
 
+  private async ensureDefaultServerSettings(): Promise<void> {
+    const settingsPath = path.join(this.gatewayEnv.T3CODE_HOME, "userdata", "settings.json");
+    let existing: Record<string, unknown> = {};
+    try {
+      const raw = await fs.readFile(settingsPath, "utf8");
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        existing = parsed as Record<string, unknown>;
+      }
+    } catch {
+      existing = {};
+    }
+
+    const { next, changed } = mergeDefaultT3ServerSettings(existing, this.gatewayEnv.T3_WORKSPACE);
+    if (!changed) return;
+
+    const payload = `${JSON.stringify(next, null, 2)}\n`;
+    await runWorkerCommand({
+      command: process.execPath,
+      args: [
+        "-e",
+        "const fs=require('node:fs'),path=require('node:path'),p=process.argv[1],dir=path.dirname(p),tmp=p+'.tmp';fs.mkdirSync(dir,{recursive:true,mode:0o700});fs.writeFileSync(tmp,process.argv[2],{mode:0o600});fs.renameSync(tmp,p);",
+        settingsPath,
+        payload,
+      ],
+      gatewayEnv: this.gatewayEnv,
+      workerEnv: this.configStore.get().workerEnv,
+      cwd: this.gatewayEnv.T3CODE_HOME,
+      timeoutMs: 5_000,
+    }).catch(() => undefined);
+  }
+
   private async spawnProcess(): Promise<void> {
     this.clearTimers();
     this.state = "starting";
     this.lastError = null;
 
+    await this.ensureDefaultServerSettings();
     await this.detectInstalledVersion();
     const bin = await resolveT3Binary(this.gatewayEnv);
     const args = [

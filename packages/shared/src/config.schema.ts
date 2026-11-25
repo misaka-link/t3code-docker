@@ -53,6 +53,7 @@ export const DesktopConfigSchema = z.object({
 export type DesktopConfig = z.infer<typeof DesktopConfigSchema>;
 
 export const WorkerEnvConfigSchema = z.object({
+  environmentLabel: z.string().trim().max(80).default(""),
   disableT3Telemetry: z.boolean().default(true),
   disableAntigravityTelemetry: z.boolean().default(true),
   httpProxy: z.string().default(""),
@@ -122,6 +123,8 @@ export const GatewayEnvSchema = z.object({
   SESSION_SECRET: emptyToUndefined(z.string()),
   ADMIN_PATH: emptyToUndefined(CustomRoutePathSchema),
   VNC_PATH: emptyToUndefined(CustomRoutePathSchema),
+  ENVIRONMENT_LABEL: emptyToUndefined(z.string().trim().max(80)),
+  T3CODE_ENVIRONMENT_LABEL: emptyToUndefined(z.string().trim().max(80)),
   DEFAULT_LOCALE: emptyToUndefined(z.enum(SUPPORTED_LOCALES)),
   RELEASE_CHANNEL: emptyToUndefined(z.enum(RELEASE_CHANNELS)),
   TRUST_PROXY: booleanFromEnv,

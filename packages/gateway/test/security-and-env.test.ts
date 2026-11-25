@@ -12,6 +12,7 @@ import {
   buildCleanWorkerEnv,
   consumeAndScrubProcessSecrets,
 } from "../src/security/env-sanitizer.js";
+import { mergeDefaultT3ServerSettings } from "../src/supervisor/t3-supervisor.js";
 
 describe("Environment Sanitizer & Gateway Security", () => {
   const tempDirs: string[] = [];
@@ -105,6 +106,16 @@ describe("Environment Sanitizer & Gateway Security", () => {
     expect(partialClean.GEMINI_TELEMETRY_ENABLED).toBe("false");
     expect(partialClean.OTEL_SDK_DISABLED).toBe("true");
     expect(partialClean.AGY_TELEMETRY_DISABLED).toBe("1");
+
+    // Custom environmentLabel injects T3CODE_ENVIRONMENT_LABEL cleanly
+    const labeledEnv = buildCleanWorkerEnv({
+      baseEnv: dirtyBase,
+      gatewayEnv,
+      workerEnv: WorkerEnvConfigSchema.parse({
+        environmentLabel: "My Cloud Devbox",
+      }),
+    });
+    expect(labeledEnv.T3CODE_ENVIRONMENT_LABEL).toBe("My Cloud Devbox");
   });
 
   it("hashes passwords with scrypt, invalidates old sessions on epoch bump, and rate-limits brute force", async () => {
@@ -164,5 +175,23 @@ describe("Environment Sanitizer & Gateway Security", () => {
         publicUrl: "https://t3.myhost.dev",
       }),
     ).toBe(true);
+  });
+
+  it("seeds addProjectBaseDirectory to /workspace while preserving explicit custom paths", () => {
+    const seeded = mergeDefaultT3ServerSettings({}, "/workspace");
+    expect(seeded.changed).toBe(true);
+    expect(seeded.next.addProjectBaseDirectory).toBe("/workspace");
+
+    const seededFromBlank = mergeDefaultT3ServerSettings({ addProjectBaseDirectory: "   " }, "/workspace");
+    expect(seededFromBlank.changed).toBe(true);
+    expect(seededFromBlank.next.addProjectBaseDirectory).toBe("/workspace");
+
+    const preserved = mergeDefaultT3ServerSettings(
+      { addProjectBaseDirectory: "/workspace/repos", ghqCloneLayout: true },
+      "/workspace",
+    );
+    expect(preserved.changed).toBe(false);
+    expect(preserved.next.addProjectBaseDirectory).toBe("/workspace/repos");
+    expect(preserved.next.ghqCloneLayout).toBe(true);
   });
 });

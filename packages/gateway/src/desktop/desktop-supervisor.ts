@@ -310,6 +310,85 @@ export class DesktopSupervisor {
     }
   }
 
+  /**
+   * Updates the saved loopback environment label inside encrypted `connection-catalog.json`
+   * after `T3CODE_ENVIRONMENT_LABEL` changes, and restarts VNC Desktop if currently running.
+   */
+  public async syncEnvironmentLabel(): Promise<void> {
+    if (!this.supported) return;
+    const catalogPath = path.join(
+      this.gatewayEnv.T3CODE_HOME,
+      "userdata",
+      "connection-catalog.json",
+    );
+    if (await fileExists(catalogPath)) {
+      try {
+        const upstreamUrl = `http://${this.gatewayEnv.T3_UPSTREAM_HOST}:${this.gatewayEnv.T3_UPSTREAM_PORT}`;
+        const descRes = await fetch(`${upstreamUrl}/.well-known/t3/environment`, {
+          signal: AbortSignal.timeout(5_000),
+        });
+        if (descRes.ok) {
+          const desc = (await descRes.json()) as { environmentId?: string; label?: string };
+          const secret = this.keyringSecret || (await this.ensureDesktopKeyringSecret());
+          if (desc.environmentId && desc.label && secret) {
+            const wrapper = JSON.parse(await fs.readFile(catalogPath, "utf8")) as {
+              encryptedCatalog?: string;
+            };
+            const decrypted =
+              typeof wrapper.encryptedCatalog === "string"
+                ? decryptLibsecretOsCryptV11(wrapper.encryptedCatalog, secret)
+                : null;
+            if (decrypted) {
+              const doc = JSON.parse(decrypted) as {
+                targets?: Array<Record<string, unknown>>;
+                profiles?: Array<Record<string, unknown>>;
+              };
+              let changed = false;
+              if (Array.isArray(doc.targets)) {
+                for (const t of doc.targets) {
+                  if (t.environmentId === desc.environmentId && t.label !== desc.label) {
+                    t.label = desc.label;
+                    changed = true;
+                  }
+                }
+              }
+              if (Array.isArray(doc.profiles)) {
+                for (const p of doc.profiles) {
+                  if (p.environmentId === desc.environmentId && p.label !== desc.label) {
+                    p.label = desc.label;
+                    changed = true;
+                  }
+                }
+              }
+              if (changed) {
+                const encryptedCatalog = encryptLibsecretOsCryptV11(JSON.stringify(doc), secret);
+                const wrapperJson = `${JSON.stringify({ version: 1, encryptedCatalog }, null, 2)}\n`;
+                await runWorkerCommand({
+                  command: "node",
+                  args: [
+                    "-e",
+                    "const fs=require('node:fs'),p=process.argv[1],tmp=p+'.tmp';fs.writeFileSync(tmp,process.argv[2],{mode:0o644});fs.renameSync(tmp,p);",
+                    catalogPath,
+                    wrapperJson,
+                  ],
+                  gatewayEnv: this.gatewayEnv,
+                  workerEnv: this.configStore.get().workerEnv,
+                  timeoutMs: 5_000,
+                });
+              }
+            }
+          }
+        }
+      } catch {
+        // Ignore best-effort catalog label sync errors
+      }
+    }
+
+    if (this.state === "running") {
+      await this.restart().catch(() => undefined);
+    }
+  }
+
   public async launchT3DesktopApp(): Promise<void> {
     this.assertSupported();
     if (this.state !== "running") {

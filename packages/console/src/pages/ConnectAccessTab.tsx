@@ -17,6 +17,7 @@ export function ConnectAccessTab(props: {
   const [savingSettings, setSavingSettings] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
 
+  const [environmentLabel, setEnvironmentLabel] = useState("");
   const [defaultLocale, setDefaultLocale] = useState<SupportedLocale>(locale);
   const [adminPath, setAdminPath] = useState("/admin");
   const [vncPath, setVncPath] = useState("/vnc");
@@ -40,6 +41,7 @@ export function ConnectAccessTab(props: {
   };
 
   const applySettingsForm = (cfg: GatewayPersistedConfig) => {
+    setEnvironmentLabel(cfg.workerEnv.environmentLabel ?? "");
     setDefaultLocale(cfg.locale);
     setAdminPath(cfg.adminPath);
     setVncPath(cfg.vncPath);
@@ -95,6 +97,7 @@ export function ConnectAccessTab(props: {
     try {
       const prevAdmin = window.location.pathname;
       const res = await gatewayApi.updateGatewaySettings({
+        environmentLabel,
         locale: defaultLocale,
         adminPath,
         vncPath,
@@ -161,6 +164,23 @@ export function ConnectAccessTab(props: {
             checked={isConnectSwitchOn}
             onChange={(next) => void handleToggleConnect(next)}
           />
+        </div>
+
+        <div className="rounded-lg border border-[var(--border)] bg-[var(--muted)]/40 p-3 space-y-2">
+          <p className="text-[11px] text-[var(--muted-foreground)] leading-relaxed">
+            {t.connect.webMultiEnvHint}
+          </p>
+          <div>
+            <a
+              href="https://app.t3.codes"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--primary)] hover:underline"
+            >
+              <span>{t.connect.openHostedWebBtn}</span>
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          </div>
         </div>
 
         {connect?.deviceAuth?.userCode && (
@@ -334,7 +354,16 @@ export function ConnectAccessTab(props: {
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-          <div className="sm:col-span-2 space-y-1.5">
+          <div className="space-y-1.5">
+            <label className="block text-xs font-medium">{t.connect.envLabelTitle}</label>
+            <Input
+              value={environmentLabel}
+              onChange={(e) => setEnvironmentLabel(e.target.value)}
+              placeholder={t.connect.envLabelPlaceholder}
+              maxLength={80}
+            />
+          </div>
+          <div className="space-y-1.5">
             <label className="block text-xs font-medium">{t.connect.defaultLocaleLabel}</label>
             <Select
               className="w-full"
