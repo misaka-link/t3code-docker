@@ -12,7 +12,11 @@ import {
   buildCleanWorkerEnv,
   consumeAndScrubProcessSecrets,
 } from "../src/security/env-sanitizer.js";
-import { mergeDefaultT3ServerSettings } from "../src/supervisor/t3-supervisor.js";
+import {
+  detectHeadlessBrowserInstalled,
+  mergeDefaultT3ServerSettings,
+} from "../src/supervisor/t3-supervisor.js";
+import { buildT3CliBinShim, syncT3CliBinShim } from "../src/utils/cli-runner.js";
 
 describe("Environment Sanitizer & Gateway Security", () => {
   const tempDirs: string[] = [];
@@ -193,5 +197,64 @@ describe("Environment Sanitizer & Gateway Security", () => {
     expect(preserved.changed).toBe(false);
     expect(preserved.next.addProjectBaseDirectory).toBe("/workspace/repos");
     expect(preserved.next.ghqCloneLayout).toBe(true);
+  });
+
+  it("detects chrome-headless-shell in $T3CODE_HOME/tools (and legacy userdata/tools) and syncs dynamic bin/t3 shim", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "t3gw-tools-"));
+    tempDirs.push(tmp);
+
+    // 1. Empty directory does not false-positive
+    const emptyShellDir = path.join(tmp, "tools", "chrome-headless-shell");
+    await fs.mkdir(emptyShellDir, { recursive: true });
+    expect(await detectHeadlessBrowserInstalled(tmp)).toBe(false);
+
+    // 2. Real T3 layout: $T3CODE_HOME/tools/chrome-headless-shell/linux64/<ver>/chrome-headless-shell
+    const realBinDir = path.join(emptyShellDir, "linux64", "158.0.8127.88");
+    await fs.mkdir(realBinDir, { recursive: true });
+    await fs.writeFile(path.join(realBinDir, "chrome-headless-shell"), "#!/bin/sh\n", {
+      mode: 0o755,
+    });
+    expect(await detectHeadlessBrowserInstalled(tmp)).toBe(true);
+
+    // 3. Legacy fallback layout: $T3CODE_HOME/userdata/tools/chrome-headless-shell/...
+    const tmpLegacy = await fs.mkdtemp(path.join(os.tmpdir(), "t3gw-legacy-tools-"));
+    tempDirs.push(tmpLegacy);
+    const legacyBinDir = path.join(
+      tmpLegacy,
+      "userdata",
+      "tools",
+      "chrome-headless-shell",
+      "linux-arm64",
+      "158.0.0.1",
+    );
+    await fs.mkdir(legacyBinDir, { recursive: true });
+    await fs.writeFile(path.join(legacyBinDir, "chrome-headless-shell"), "#!/bin/sh\n", {
+      mode: 0o755,
+    });
+    expect(await detectHeadlessBrowserInstalled(tmpLegacy)).toBe(true);
+
+    // 4. syncT3CliBinShim overwrites stale Desktop-hardcoded versions/<ver> shim with dynamic runtime/current wrapper
+    const gatewayEnv = GatewayEnvSchema.parse({ T3CODE_HOME: tmp });
+    const workerEnv = WorkerEnvConfigSchema.parse({});
+    const binDir = path.join(tmp, "bin");
+    await fs.mkdir(binDir, { recursive: true });
+    await fs.writeFile(
+      path.join(binDir, "t3"),
+      "#!/bin/sh\napp='/data/t3/runtime/versions/0.1.12/opt/T3 Code (Beta)/t3code'\n",
+      "utf8",
+    );
+
+    const syncedShimPath = await syncT3CliBinShim(gatewayEnv, workerEnv);
+    expect(syncedShimPath).toBe(path.join(tmp, "bin", "t3"));
+    const shimBody = await fs.readFile(syncedShimPath, "utf8");
+    expect(shimBody).toBe(buildT3CliBinShim(tmp));
+    expect(shimBody).toContain("$home/runtime/current/t3-server-launcher");
+    expect(shimBody).not.toContain("runtime/versions/0.1.12");
+
+    // 5. buildCleanWorkerEnv includes $T3CODE_HOME/bin on PATH
+    const clean = buildCleanWorkerEnv({ gatewayEnv, workerEnv });
+    expect(clean.PATH?.split(process.platform === "win32" ? ";" : ":")).toContain(
+      path.join(tmp, "bin"),
+    );
   });
 });

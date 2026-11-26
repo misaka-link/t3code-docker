@@ -19,7 +19,7 @@ import { mergeNoProxy } from "../security/env-sanitizer.js";
 import type { SnapshotService } from "../snapshots/snapshot-service.js";
 import type { T3ProcessSupervisor } from "../supervisor/t3-supervisor.js";
 import { fileExists, writeFileAtomic } from "../utils/atomic-fs.js";
-import { getFreeDiskMb, runWorkerCommand } from "../utils/cli-runner.js";
+import { getFreeDiskMb, runWorkerCommand, syncT3CliBinShim } from "../utils/cli-runner.js";
 
 interface GithubReleaseAsset {
   readonly name: string;
@@ -677,6 +677,9 @@ export class VersionHubService {
           await this.desktopSupervisor?.stop().catch(() => undefined);
         }
         await this.replaceSymlinkAtomic(this.currentLinkPath, targetDir);
+        await syncT3CliBinShim(this.gatewayEnv, this.configStore.get().workerEnv).catch(
+          () => undefined,
+        );
         this.supervisor.setActiveVersionHint(targetVersion);
       },
       true,
@@ -694,6 +697,9 @@ export class VersionHubService {
           "updating",
           async () => {
             await this.replaceSymlinkAtomic(this.currentLinkPath, previousTarget);
+            await syncT3CliBinShim(this.gatewayEnv, this.configStore.get().workerEnv).catch(
+              () => undefined,
+            );
             this.supervisor.setActiveVersionHint(previousVersion);
           },
           true,

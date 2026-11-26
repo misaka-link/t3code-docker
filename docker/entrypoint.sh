@@ -30,6 +30,7 @@ if [ "$(id -u)" = "0" ]; then
   # 3. Prepare coder-owned persistent directories
   mkdir -p \
     "$T3CODE_HOME/userdata" \
+    "$T3CODE_HOME/bin" \
     "$T3CODE_HOME/runtime/versions" \
     "$T3CODE_HOME/.staging" \
     "$T3CODE_HOME/.keyrings" \
@@ -40,6 +41,26 @@ if [ "$(id -u)" = "0" ]; then
     "$CODER_HOME/.local/share" \
     "$CODER_HOME/.config" \
     "$T3_WORKSPACE"
+
+  # Maintain a version-agnostic `$T3CODE_HOME/bin/t3` shim that delegates to `runtime/current`
+  cat > "$T3CODE_HOME/bin/t3" <<EOF
+#!/bin/sh
+# Managed by T3 Docker Gateway: dynamically delegates to active runtime/current slot.
+default_home='${T3CODE_HOME}'
+home="\${T3CODE_HOME:-\$default_home}"
+export T3CODE_HOME="\$home"
+if [ -x "\$home/runtime/current/t3" ]; then
+  export T3CODE_CLI_PATH="\$home/bin/t3"
+  exec "\$home/runtime/current/t3" "\$@"
+fi
+if [ -x "\$home/runtime/current/t3-server-launcher" ]; then
+  exec "\$home/runtime/current/t3-server-launcher" "\$@"
+fi
+echo "Active T3 Code runtime not found under \$home/runtime/current" >&2
+exit 127
+EOF
+  chmod 0755 "$T3CODE_HOME/bin/t3"
+  ln -sfn "$T3CODE_HOME/bin/t3" "$CODER_HOME/.local/bin/t3"
 
   # Persist unlocked GNOME keyring under $T3CODE_HOME/.keyrings so T3 Desktop's encrypted
   # connection-catalog.json and keyring secret stay paired across container recreations

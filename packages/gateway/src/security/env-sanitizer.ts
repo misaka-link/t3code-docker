@@ -84,6 +84,7 @@ export function buildCleanWorkerEnv(input: {
     result[key] = val;
   }
 
+  const t3BinDir = path.join(input.gatewayEnv.T3CODE_HOME, "bin");
   const npmGlobalBin = path.join(input.gatewayEnv.T3GW_PROVIDERS_DIR, "npm-global", "bin");
   const miseShims = path.join(input.gatewayEnv.T3GW_PROVIDERS_DIR, "mise", "shims");
   const userLocalBin = path.join(input.gatewayEnv.CODER_HOME, ".local", "bin");
@@ -110,7 +111,7 @@ export function buildCleanWorkerEnv(input: {
   result.MISE_DATA_DIR = path.join(input.gatewayEnv.T3GW_PROVIDERS_DIR, "mise");
   result.MISE_CONFIG_DIR = path.join(input.gatewayEnv.T3GW_PROVIDERS_DIR, "mise-config");
   result.LANG = result.LANG || "C.UTF-8";
-  result.PATH = [userLocalBin, miseShims, npmGlobalBin, existingPath].join(pathDelimiter);
+  result.PATH = [userLocalBin, t3BinDir, miseShims, npmGlobalBin, existingPath].join(pathDelimiter);
 
   if (input.workerEnv.httpProxy) {
     result.HTTP_PROXY = input.workerEnv.httpProxy;

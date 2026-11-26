@@ -9,9 +9,51 @@ import {
   getFreeDiskMb,
   resolveT3Binary,
   runWorkerCommand,
+  syncT3CliBinShim,
   wrapPrivilegeDrop,
 } from "../utils/cli-runner.js";
 import { LogRingBuffer } from "./ring-buffer.js";
+
+async function hasExecutableHeadlessShell(dir: string, maxDepth: number): Promise<boolean> {
+  if (maxDepth < 0) return false;
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      const fullPath = path.join(dir, entry.name);
+      if (
+        entry.isFile() &&
+        (entry.name === "chrome-headless-shell" || entry.name === "chrome-headless-shell.exe")
+      ) {
+        return true;
+      }
+      if (entry.isDirectory() && (await hasExecutableHeadlessShell(fullPath, maxDepth - 1))) {
+        return true;
+      }
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+/**
+ * Checks whether T3's managed `chrome-headless-shell` binary has been downloaded under
+ * `$T3CODE_HOME/tools/chrome-headless-shell` (current T3 layout) or `$T3CODE_HOME/userdata/tools/chrome-headless-shell` (legacy layout).
+ */
+export async function detectHeadlessBrowserInstalled(t3HomeDir: string): Promise<boolean> {
+  const candidateRoots = [
+    path.join(t3HomeDir, "tools", "chrome-headless-shell"),
+    path.join(t3HomeDir, "userdata", "tools", "chrome-headless-shell"),
+  ];
+  for (const root of candidateRoots) {
+    if (!(await fileExists(root))) continue;
+    if (await hasExecutableHeadlessShell(root, 3)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 export function mergeDefaultT3ServerSettings(
   existing: Readonly<Record<string, unknown>>,
@@ -80,14 +122,10 @@ export class T3ProcessSupervisor {
   }
 
   public async getStatus(): Promise<SupervisorStatus> {
-    const freeDiskMb = await getFreeDiskMb(this.gatewayEnv.T3CODE_HOME);
-    const headlessToolsDir = path.join(
-      this.gatewayEnv.T3CODE_HOME,
-      "userdata",
-      "tools",
-      "chrome-headless-shell",
-    );
-    const headlessBrowserInstalled = await fileExists(headlessToolsDir);
+    const [freeDiskMb, headlessBrowserInstalled] = await Promise.all([
+      getFreeDiskMb(this.gatewayEnv.T3CODE_HOME),
+      detectHeadlessBrowserInstalled(this.gatewayEnv.T3CODE_HOME),
+    ]);
     const mem = process.memoryUsage();
 
     return {
@@ -255,6 +293,9 @@ export class T3ProcessSupervisor {
     this.lastError = null;
 
     await this.ensureDefaultServerSettings();
+    await syncT3CliBinShim(this.gatewayEnv, this.configStore.get().workerEnv).catch(
+      () => undefined,
+    );
     await this.detectInstalledVersion();
     const bin = await resolveT3Binary(this.gatewayEnv);
     const args = [

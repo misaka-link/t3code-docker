@@ -14,7 +14,7 @@ import type { T3AuthBridge } from "../auth-bridge/t3-auth-bridge.js";
 import type { ConfigStore } from "../config/config-store.js";
 import { buildCleanWorkerEnv } from "../security/env-sanitizer.js";
 import { fileExists, writeFileAtomic } from "../utils/atomic-fs.js";
-import { runWorkerCommand, wrapPrivilegeDrop } from "../utils/cli-runner.js";
+import { runWorkerCommand, syncT3CliBinShim, wrapPrivilegeDrop } from "../utils/cli-runner.js";
 import { resolveEffectiveDesktopLocale, toT3ClientLanguage } from "./browser-locale.js";
 
 const DISPLAY_ID = ":99";
@@ -900,6 +900,9 @@ export class DesktopSupervisor {
     ).catch(() => undefined);
     await fs.rm(DBUS_SOCKET_PATH, { force: true }).catch(() => undefined);
     this.sessionEnv = {};
+    await syncT3CliBinShim(this.gatewayEnv, this.configStore.get().workerEnv).catch(
+      () => undefined,
+    );
     this.state = "hibernated";
   }
 

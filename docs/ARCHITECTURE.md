@@ -182,7 +182,7 @@ sequenceDiagram
 | 维度 | 轨道一：无头浏览器 (Headless Browser) | 轨道二：有头桌面浏览器 (Headed Desktop Browser) |
 | :--- | :--- | :--- |
 | **适用镜像** | `:latest` 与 `:headless` **100% 全支持** | 仅 `:latest`（Full 镜像，默认休眠 0 内存） |
-| **底层内核** | T3 官方 `ServerBrowser` 自管理的 `chrome-headless-shell`（原生支持 `linux64` 与 `linux-arm64`，自动持久化至 `$T3CODE_HOME/userdata/tools/`） | VNC 虚拟桌面内的真实有头 `/usr/bin/chromium`（监听回环 CDP `127.0.0.1:9222`） |
+| **底层内核** | T3 官方 `ServerBrowser` 自管理的 `chrome-headless-shell`（原生支持 `linux64` 与 `linux-arm64`，自动持久化至 `$T3CODE_HOME/tools/`） | VNC 虚拟桌面内的真实有头 `/usr/bin/chromium`（监听回环 CDP `127.0.0.1:9222`） |
 | **Agent 调用协议** | **① T3 官方内置 MCP (`t3-code`: `preview_*` / `html_render`)** 开箱即用<br>**② 可选一键注册标准无头 `@playwright/mcp`** | **标准 MCP 服务 (`@t3-docker/desktop-browser-mcp`)**<br>底层通过 Playwright/CDP 桥接 `127.0.0.1:9222`，一键注册至各 Agent 原生 MCP 配置 |
 | **核心运行机制** | 共享底座 `base-dev` 精确预装官方 `PreviewBrowserHost.ts` 要求的 17 个 Debian `t64` 系统库（`libnss3`、`libgbm1`、`libasound2t64` 等），并向 `t3 serve` 传入官方支持的 `T3CODE_SERVER_BROWSER_SANDBOX=0`；后台提供「预热下载无头内核」按钮防止慢网首次 60s 调用超时 | **按需自动唤醒 + 人机同屏接管**：当 Agent 调用该有头 MCP 工具时，若 `DesktopSupervisor` 处于休眠态，MCP 桥接器自动通知网关 **1~2 秒内拉起 VNC 与有头 Chromium** 并刷新休眠计时器；遇到登录/验证码时用户可随时打开 `/vnc` 鼠标人工接管，完成后 Agent 无缝继续执行 |
 

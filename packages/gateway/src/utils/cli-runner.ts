@@ -3,12 +3,72 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { GatewayEnv, WorkerEnvConfig } from "@t3-docker/shared";
 import { buildCleanWorkerEnv } from "../security/env-sanitizer.js";
-import { fileExists } from "./atomic-fs.js";
+import { fileExists, writeFileAtomic } from "./atomic-fs.js";
 
 export interface CommandResult {
   readonly code: number;
   readonly stdout: string;
   readonly stderr: string;
+}
+
+export function buildT3CliBinShim(t3HomeDir: string): string {
+  const escapedHome = t3HomeDir.replace(/'/g, "'\\''");
+  return [
+    "#!/bin/sh",
+    "# Managed by T3 Docker Gateway: dynamically delegates to active runtime/current slot.",
+    `default_home='${escapedHome}'`,
+    'home="${T3CODE_HOME:-$default_home}"',
+    'export T3CODE_HOME="$home"',
+    'if [ -x "$home/runtime/current/t3" ]; then',
+    '  export T3CODE_CLI_PATH="$home/bin/t3"',
+    '  exec "$home/runtime/current/t3" "$@"',
+    "fi",
+    'if [ -x "$home/runtime/current/t3-server-launcher" ]; then',
+    '  exec "$home/runtime/current/t3-server-launcher" "$@"',
+    "fi",
+    'echo "Active T3 Code runtime not found under $home/runtime/current" >&2',
+    "exit 127",
+    "",
+  ].join("\n");
+}
+
+/**
+ * Ensures `$T3CODE_HOME/bin/t3` always delegates to `$T3CODE_HOME/runtime/current`
+ * rather than a hardcoded `runtime/versions/<oldVer>` path written by T3 Desktop's shim.
+ */
+export async function syncT3CliBinShim(
+  gatewayEnv: GatewayEnv,
+  workerEnv: WorkerEnvConfig,
+): Promise<string> {
+  const binDir = path.join(gatewayEnv.T3CODE_HOME, "bin");
+  const shimPath = path.join(binDir, "t3");
+  const content = buildT3CliBinShim(gatewayEnv.T3CODE_HOME);
+
+  if (
+    process.platform === "linux" &&
+    gatewayEnv.CODER_USER &&
+    typeof process.getuid === "function" &&
+    process.getuid() === 0
+  ) {
+    await runWorkerCommand({
+      command: process.execPath,
+      args: [
+        "-e",
+        "const fs=require('node:fs'),path=require('node:path'),p=process.argv[1],body=process.argv[2];fs.mkdirSync(path.dirname(p),{recursive:true,mode:0o755});const tmp=p+'.tmp.'+process.pid;fs.writeFileSync(tmp,body,{mode:0o755});fs.chmodSync(tmp,0o755);fs.renameSync(tmp,p);",
+        shimPath,
+        content,
+      ],
+      gatewayEnv,
+      workerEnv,
+      cwd: "/tmp",
+      timeoutMs: 5_000,
+    });
+    return shimPath;
+  }
+
+  await fs.mkdir(binDir, { recursive: true, mode: 0o755 });
+  await writeFileAtomic(shimPath, content, 0o755);
+  return shimPath;
 }
 
 export async function resolveT3Binary(gatewayEnv: GatewayEnv): Promise<string> {
