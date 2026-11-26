@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   Archive,
@@ -34,6 +34,11 @@ function ConsoleShell(props: {
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [supervisor, setSupervisor] = useState<SupervisorStatus | null>(null);
   const [routes, setRoutes] = useState(props.bootstrap.routes);
+  const scrollPaneRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    scrollPaneRef.current?.scrollTo({ top: 0 });
+  }, [activeTab]);
 
   const refreshSupervisor = useCallback(async () => {
     if (typeof document !== "undefined" && document.hidden) return;
@@ -112,13 +117,13 @@ function ConsoleShell(props: {
   };
 
   return (
-    <div className="min-h-screen flex flex-col md:flex-row bg-[var(--background)] text-[var(--foreground)]">
+    <div className="h-dvh overflow-hidden flex flex-col md:flex-row bg-[var(--background)] text-[var(--foreground)]">
       {/* T3 Settings-styled Sidebar */}
       <aside
         data-slot="sidebar"
-        className="w-full md:w-60 shrink-0 bg-[var(--sidebar)] border-b md:border-b-0 md:border-r border-[var(--sidebar-border)] flex flex-col"
+        className="w-full md:w-60 md:h-full shrink-0 bg-[var(--sidebar)] border-b md:border-b-0 md:border-r border-[var(--sidebar-border)] flex flex-col"
       >
-        <div className="h-[52px] px-3.5 flex items-center justify-between border-b border-[var(--sidebar-border)]">
+        <div className="h-[52px] shrink-0 px-3.5 flex items-center justify-between border-b border-[var(--sidebar-border)]">
           <a
             href="/"
             className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--sidebar-foreground)] hover:opacity-80"
@@ -129,7 +134,7 @@ function ConsoleShell(props: {
           <Badge tone="neutral">v{props.bootstrap.suiteVersion}</Badge>
         </div>
 
-        <nav className="p-2 flex md:flex-col gap-1 overflow-x-auto">
+        <nav className="p-2 flex md:flex-col md:flex-1 md:min-h-0 gap-1 overflow-x-auto md:overflow-y-auto">
           {navItems
             .filter((item) => !item.hidden)
             .map((item) => {
@@ -153,7 +158,7 @@ function ConsoleShell(props: {
             })}
         </nav>
 
-        <div className="hidden md:flex mt-auto p-3 border-t border-[var(--sidebar-border)] items-center justify-between">
+        <div className="hidden md:flex shrink-0 mt-auto p-3 border-t border-[var(--sidebar-border)] items-center justify-between">
           <div className="flex items-center gap-2 text-xs text-[var(--sidebar-muted)]">
             <Terminal className="h-3.5 w-3.5" />
             <span className="font-mono">{props.bootstrap.variant}</span>
@@ -166,8 +171,12 @@ function ConsoleShell(props: {
       </aside>
 
       {/* Main Content Workspace */}
-      <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-[52px] px-5 border-b border-[var(--border)] t3-surface-glass sticky top-0 z-20 flex items-center justify-between gap-3">
+      <div
+        ref={scrollPaneRef}
+        data-settings-page-scroll
+        className="flex-1 min-w-0 min-h-0 flex flex-col overflow-y-auto"
+      >
+        <header className="h-[52px] shrink-0 px-5 border-b border-[var(--border)] t3-surface-glass sticky top-0 z-20 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <StatusDot
               tone={
@@ -187,7 +196,7 @@ function ConsoleShell(props: {
           <TopLocaleThemeControls onPersistPreference={persistPref} />
         </header>
 
-        <main data-settings-page-scroll className="flex-1 p-5 md:p-7 max-w-4xl w-full mx-auto">
+        <main className="flex-1 p-5 md:p-7 max-w-4xl w-full mx-auto">
           {activeTab === "overview" && (
             <OverviewTab status={supervisor} onRefreshStatus={refreshSupervisor} />
           )}
