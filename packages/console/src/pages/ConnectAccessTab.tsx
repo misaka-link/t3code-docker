@@ -1,5 +1,6 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
+  AlertCircle,
   ArrowDownToLine,
   ArrowUpFromLine,
   Check,
@@ -24,6 +25,23 @@ import { gatewayApi } from "../lib/api";
 import { applySyncStateToBrowser, collectBrowserSyncPayload } from "../lib/client-sync";
 import { Badge, Button, Input, Select, Switch } from "../components/ui";
 
+interface SyncFeedbackBanner {
+  readonly direction: "pull" | "push";
+  readonly tone: "success" | "warning" | "error";
+  readonly title: string;
+  readonly detail?: string;
+}
+
+function formatSyncCounts(
+  template: string,
+  counts: { settings: number; extras: number; envs: number },
+): string {
+  return template
+    .replace("{settings}", String(counts.settings))
+    .replace("{extras}", String(counts.extras))
+    .replace("{envs}", String(counts.envs));
+}
+
 export function ConnectAccessTab(props: {
   readonly onRoutesChanged: (adminPath: string, vncPath: string) => void;
 }) {
@@ -32,7 +50,11 @@ export function ConnectAccessTab(props: {
   const [togglingConnect, setTogglingConnect] = useState(false);
   const [syncState, setSyncState] = useState<ClientSyncState | null>(null);
   const [syncBusy, setSyncBusy] = useState<"pull" | "push" | null>(null);
-  const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  const [justSynced, setJustSynced] = useState<"pull" | "push" | null>(null);
+  const [syncFeedback, setSyncFeedback] = useState<SyncFeedbackBanner | null>(null);
+  const syncFeedbackRef = useRef<HTMLDivElement | null>(null);
+  const syncNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const syncBadgeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sessions, setSessions] = useState<Array<{ id: string; label?: string; expiresAt?: string }>>([]);
   const [pairingLink, setPairingLink] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -80,6 +102,10 @@ export function ConnectAccessTab(props: {
 
   useEffect(() => {
     void loadAll();
+    return () => {
+      if (syncNoticeTimerRef.current) clearTimeout(syncNoticeTimerRef.current);
+      if (syncBadgeTimerRef.current) clearTimeout(syncBadgeTimerRef.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -130,18 +156,84 @@ export function ConnectAccessTab(props: {
     }
   };
 
+  const showSyncFeedback = (banner: SyncFeedbackBanner, doneDirection?: "pull" | "push") => {
+    if (syncNoticeTimerRef.current) {
+      clearTimeout(syncNoticeTimerRef.current);
+      syncNoticeTimerRef.current = null;
+    }
+    if (syncBadgeTimerRef.current) {
+      clearTimeout(syncBadgeTimerRef.current);
+      syncBadgeTimerRef.current = null;
+    }
+
+    setSyncFeedback(banner);
+    if (doneDirection) {
+      setJustSynced(doneDirection);
+      syncBadgeTimerRef.current = setTimeout(() => {
+        setJustSynced(null);
+        syncBadgeTimerRef.current = null;
+      }, 3_500);
+    } else {
+      setJustSynced(null);
+    }
+
+    if (banner.tone !== "error") {
+      syncNoticeTimerRef.current = setTimeout(() => {
+        setSyncFeedback(null);
+        syncNoticeTimerRef.current = null;
+      }, 10_000);
+    }
+
+    requestAnimationFrame(() => {
+      syncFeedbackRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  };
+
   const handlePullFromDesktop = async () => {
     setError(null);
-    setSyncNotice(null);
+    if (syncNoticeTimerRef.current) {
+      clearTimeout(syncNoticeTimerRef.current);
+      syncNoticeTimerRef.current = null;
+    }
+    setSyncFeedback(null);
+    setJustSynced(null);
     setSyncBusy("pull");
+    const minSpin = new Promise<void>((r) => setTimeout(r, 220));
     try {
-      const latest = await gatewayApi.getSyncState();
+      const [latest] = await Promise.all([gatewayApi.getSyncState(), minSpin]);
       setSyncState(latest);
-      await applySyncStateToBrowser(latest);
-      setSyncNotice(t.connect.syncPulledNotice);
-      setTimeout(() => setSyncNotice(null), 4000);
+      const applied = await applySyncStateToBrowser(latest);
+      const totalApplied =
+        applied.settingsCount + applied.webExtrasCount + applied.environmentsCount;
+
+      if (totalApplied === 0 && !applied.idbWarning) {
+        showSyncFeedback({
+          direction: "pull",
+          tone: "warning",
+          title: t.connect.syncPulledEmptyNotice,
+        });
+      } else {
+        const detail = formatSyncCounts(t.connect.syncPulledDetail, {
+          settings: applied.settingsCount,
+          extras: applied.webExtrasCount,
+          envs: applied.environmentsCount,
+        });
+        showSyncFeedback(
+          {
+            direction: "pull",
+            tone: applied.idbWarning ? "warning" : "success",
+            title: t.connect.syncPulledNotice,
+            detail: applied.idbWarning ? `${detail} (${applied.idbWarning})` : detail,
+          },
+          "pull",
+        );
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : t.common.error);
+      showSyncFeedback({
+        direction: "pull",
+        tone: "error",
+        title: err instanceof Error ? err.message : t.common.error,
+      });
     } finally {
       setSyncBusy(null);
     }
@@ -149,16 +241,36 @@ export function ConnectAccessTab(props: {
 
   const handlePushToDesktop = async () => {
     setError(null);
-    setSyncNotice(null);
+    if (syncNoticeTimerRef.current) {
+      clearTimeout(syncNoticeTimerRef.current);
+      syncNoticeTimerRef.current = null;
+    }
+    setSyncFeedback(null);
+    setJustSynced(null);
     setSyncBusy("push");
+    const minSpin = new Promise<void>((r) => setTimeout(r, 220));
     try {
       const payload = await collectBrowserSyncPayload(syncState?.localEnvironmentId ?? null);
-      const updated = await gatewayApi.pushSyncState(payload);
+      const [updated] = await Promise.all([gatewayApi.pushSyncState(payload), minSpin]);
       setSyncState(updated);
-      setSyncNotice(t.connect.syncPushedNotice);
-      setTimeout(() => setSyncNotice(null), 4000);
+      showSyncFeedback(
+        {
+          direction: "push",
+          tone: "success",
+          title: formatSyncCounts(t.connect.syncPushedNotice, {
+            settings: Object.keys(payload.clientSettings ?? {}).length,
+            extras: Object.keys(payload.webExtras ?? {}).length,
+            envs: (payload.portableEnvironments ?? []).length,
+          }),
+        },
+        "push",
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : t.common.error);
+      showSyncFeedback({
+        direction: "push",
+        tone: "error",
+        title: err instanceof Error ? err.message : t.common.error,
+      });
     } finally {
       setSyncBusy(null);
     }
@@ -402,7 +514,10 @@ export function ConnectAccessTab(props: {
               {t.connect.syncStatsSettings}
             </div>
             <div className="text-sm font-mono font-semibold mt-0.5">
-              {syncState ? Object.keys(syncState.clientSettings).length : 0}
+              {syncState
+                ? Object.keys(syncState.clientSettings).length +
+                  Object.keys(syncState.webExtras).length
+                : 0}
             </div>
           </div>
           <div className="rounded-lg border border-[var(--border)] bg-[var(--muted)]/30 p-3">
@@ -456,10 +571,14 @@ export function ConnectAccessTab(props: {
           >
             {syncBusy === "pull" ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : justSynced === "pull" ? (
+              <Check className="h-3.5 w-3.5" />
             ) : (
               <ArrowDownToLine className="h-3.5 w-3.5" />
             )}
-            <span>{t.connect.syncPullBtn}</span>
+            <span>
+              {justSynced === "pull" ? t.connect.syncPullDoneBtn : t.connect.syncPullBtn}
+            </span>
           </Button>
           <Button
             size="sm"
@@ -468,16 +587,53 @@ export function ConnectAccessTab(props: {
           >
             {syncBusy === "push" ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : justSynced === "push" ? (
+              <Check className="h-3.5 w-3.5" />
             ) : (
               <ArrowUpFromLine className="h-3.5 w-3.5" />
             )}
-            <span>{t.connect.syncPushBtn}</span>
+            <span>
+              {justSynced === "push" ? t.connect.syncPushDoneBtn : t.connect.syncPushBtn}
+            </span>
           </Button>
         </div>
 
-        {syncNotice && (
-          <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-400">
-            {syncNotice}
+        {syncFeedback && (
+          <div
+            ref={syncFeedbackRef}
+            role="status"
+            className={`rounded-lg border px-3.5 py-2.5 text-xs space-y-1.5 ${
+              syncFeedback.tone === "success"
+                ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-400"
+                : syncFeedback.tone === "warning"
+                  ? "border-amber-500/35 bg-amber-500/10 text-amber-300"
+                  : "border-red-500/35 bg-red-500/10 text-red-400"
+            }`}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 font-medium">
+                {syncFeedback.tone === "success" ? (
+                  <Check className="h-4 w-4 shrink-0 text-emerald-400" />
+                ) : (
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                )}
+                <span>{syncFeedback.title}</span>
+              </div>
+              {syncFeedback.direction === "pull" && syncFeedback.tone !== "error" && (
+                <a
+                  href="/"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-[var(--control-radius)] bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-medium transition-colors"
+                >
+                  <span>{t.connect.syncOpenWorkspaceBtn}</span>
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              )}
+            </div>
+            {syncFeedback.detail && (
+              <p className="text-[11px] text-[var(--muted-foreground)] pl-6 leading-relaxed">
+                {syncFeedback.detail}
+              </p>
+            )}
           </div>
         )}
       </section>

@@ -422,7 +422,7 @@ export class DesktopSupervisor {
     }
 
     try {
-      const secret = this.keyringSecret || (await this.ensureDesktopKeyringSecret());
+      let secret = this.keyringSecret || (await this.ensureDesktopKeyringSecret());
       if (!secret) return { portableEnvironments: [], relayTargets: [] };
       const rawWrapper = JSON.parse(await fs.readFile(catalogPath, "utf8")) as {
         encryptedCatalog?: string;
@@ -430,7 +430,13 @@ export class DesktopSupervisor {
       if (typeof rawWrapper.encryptedCatalog !== "string") {
         return { portableEnvironments: [], relayTargets: [] };
       }
-      const decrypted = decryptLibsecretOsCryptV11(rawWrapper.encryptedCatalog, secret);
+      let decrypted = decryptLibsecretOsCryptV11(rawWrapper.encryptedCatalog, secret);
+      if (!decrypted) {
+        secret = await this.ensureDesktopKeyringSecret();
+        decrypted = secret
+          ? decryptLibsecretOsCryptV11(rawWrapper.encryptedCatalog, secret)
+          : null;
+      }
       if (!decrypted) return { portableEnvironments: [], relayTargets: [] };
 
       const doc = JSON.parse(decrypted) as {
@@ -504,17 +510,18 @@ export class DesktopSupervisor {
   public async mergePortableEnvironmentsIntoDesktop(
     localEnvId: string | null,
     incoming: readonly PortableEnvironmentBundle[],
-  ): Promise<void> {
+    options?: { reloadRunningApp?: boolean },
+  ): Promise<boolean> {
     const validIncoming = incoming.filter(
       (b) =>
         b.environmentId &&
         (!localEnvId || b.environmentId !== localEnvId) &&
         !isLoopbackUrl(b.httpBaseUrl),
     );
-    if (validIncoming.length === 0) return;
+    if (validIncoming.length === 0) return false;
 
-    const secret = this.keyringSecret || (await this.ensureDesktopKeyringSecret());
-    if (!secret) return;
+    let secret = this.keyringSecret || (await this.ensureDesktopKeyringSecret());
+    if (!secret) return false;
 
     const catalogPath = path.join(
       this.gatewayEnv.T3CODE_HOME,
@@ -546,7 +553,11 @@ export class DesktopSupervisor {
         encryptedCatalog?: string;
       };
       if (typeof rawWrapper.encryptedCatalog === "string") {
-        const dec = decryptLibsecretOsCryptV11(rawWrapper.encryptedCatalog, secret);
+        let dec = decryptLibsecretOsCryptV11(rawWrapper.encryptedCatalog, secret);
+        if (!dec) {
+          secret = await this.ensureDesktopKeyringSecret();
+          dec = secret ? decryptLibsecretOsCryptV11(rawWrapper.encryptedCatalog, secret) : null;
+        }
         if (dec) {
           const parsed = JSON.parse(dec) as Partial<RawCatalog>;
           if (parsed && typeof parsed === "object") {
@@ -652,14 +663,27 @@ export class DesktopSupervisor {
       await writeFileAtomic(catalogPath, wrapperJson, 0o644);
     }
 
-    if (this.supported && this.state === "running" && this.procs.has("t3-desktop")) {
-      const activeApp = this.procs.get("t3-desktop");
-      if (activeApp) {
-        this.procs.delete("t3-desktop");
-        await this.terminateProcess(activeApp);
-      }
-      await this.launchT3DesktopApp().catch(() => undefined);
+    if (
+      options?.reloadRunningApp !== false &&
+      this.supported &&
+      this.state === "running" &&
+      this.procs.has("t3-desktop")
+    ) {
+      await this.reloadRunningT3DesktopApp();
     }
+    return true;
+  }
+
+  public async reloadRunningT3DesktopApp(): Promise<void> {
+    if (!this.supported || this.state !== "running" || !this.procs.has("t3-desktop")) {
+      return;
+    }
+    const activeApp = this.procs.get("t3-desktop");
+    if (activeApp) {
+      this.procs.delete("t3-desktop");
+      await this.terminateProcess(activeApp);
+    }
+    await this.launchT3DesktopApp().catch(() => undefined);
   }
 
   public async launchT3DesktopApp(): Promise<void> {

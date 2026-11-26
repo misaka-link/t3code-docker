@@ -17,6 +17,7 @@ import {
   isUnsafeArchiveEntryPath,
 } from "../src/snapshots/snapshot-service.js";
 import { T3ProcessSupervisor } from "../src/supervisor/t3-supervisor.js";
+import { applyChromiumLevelDbLogBuffer } from "../src/sync/client-sync-service.js";
 import {
   VersionHubService,
   downloadArchiveResumable,
@@ -355,6 +356,89 @@ describe("Snapshot Archive Safety & Fastify Unified Gateway Integration", () => 
       expect(syncState.webExtras["evil:untrusted-key"]).toBeUndefined();
       expect(syncState.portableEnvironments).toHaveLength(1);
       expect(syncState.portableEnvironments[0]?.environmentId).toBe("env-remote-box");
+
+      // 8. Extracts newer VNC Desktop Electron LevelDB theme/UI keys while ignoring composer drafts & deletions
+      function encodeVarint(n: number): Buffer {
+        const bytes: number[] = [];
+        let v = n >>> 0;
+        while (v >= 0x80) {
+          bytes.push((v & 0x7f) | 0x80);
+          v >>>= 7;
+        }
+        bytes.push(v);
+        return Buffer.from(bytes);
+      }
+      function makePutEntry(key: string, val: string): Buffer {
+        const kBuf = Buffer.concat([
+          Buffer.from("_t3code://app\x00", "latin1"),
+          Buffer.from([0x01]),
+          Buffer.from(key, "latin1"),
+        ]);
+        const vBuf = Buffer.concat([Buffer.from([0x01]), Buffer.from(val, "latin1")]);
+        return Buffer.concat([
+          Buffer.from([0x01]),
+          encodeVarint(kBuf.length),
+          kBuf,
+          encodeVarint(vBuf.length),
+          vBuf,
+        ]);
+      }
+      function makeDelEntry(key: string): Buffer {
+        const kBuf = Buffer.concat([
+          Buffer.from("_t3code://app\x00", "latin1"),
+          Buffer.from([0x01]),
+          Buffer.from(key, "latin1"),
+        ]);
+        return Buffer.concat([Buffer.from([0x00]), encodeVarint(kBuf.length), kBuf]);
+      }
+
+      const entriesBuf = Buffer.concat([
+        makePutEntry("t3code:theme-appearance-mode", "light"),
+        makePutEntry("t3code:sidebar:working-expanded", "false"),
+        makePutEntry("t3code:theme-follow-system", "true"),
+        makeDelEntry("t3code:theme-follow-system"),
+        makePutEntry("t3code:composer-drafts:v1", "{\"secretDraft\":\"do-not-sync\"}"),
+      ]);
+      const batchHeader = Buffer.alloc(12);
+      batchHeader.writeUInt32LE(5, 8);
+      const batch = Buffer.concat([batchHeader, entriesBuf]);
+      const recHeader = Buffer.alloc(7);
+      recHeader.writeUInt16LE(batch.length, 4);
+      recHeader[6] = 1; // kFullType
+      const logBuf = Buffer.concat([recHeader, batch]);
+
+      const parsedMap = new Map<string, string>();
+      applyChromiumLevelDbLogBuffer(logBuf, parsedMap);
+      expect(parsedMap.get("t3code:theme-appearance-mode")).toBe("light");
+      expect(parsedMap.get("t3code:sidebar:working-expanded")).toBe("false");
+      expect(parsedMap.has("t3code:theme-follow-system")).toBe(false);
+      expect(parsedMap.has("t3code:composer-drafts:v1")).toBe(false);
+
+      // Write synthetic Electron LevelDB log under CODER_HOME/.config/t3code-v2/Local Storage/leveldb
+      const levelDbDir = path.join(
+        gatewayEnv.CODER_HOME,
+        ".config",
+        "t3code-v2",
+        "Local Storage",
+        "leveldb",
+      );
+      await fs.mkdir(levelDbDir, { recursive: true });
+      const logFile = path.join(levelDbDir, "000003.log");
+      await fs.writeFile(logFile, logBuf);
+      const futureDate = new Date(Date.now() + 5_000);
+      await fs.utimes(logFile, futureDate, futureDate);
+
+      const syncAfterDesktopTheme = await app.inject({
+        method: "GET",
+        url: `${GATEWAY_API_PREFIX}/sync/state`,
+        headers: { cookie: cookiePair },
+      });
+      const mergedSync = syncAfterDesktopTheme.json() as {
+        webExtras: Record<string, string>;
+      };
+      expect(mergedSync.webExtras["t3code:theme-appearance-mode"]).toBe("light");
+      expect(mergedSync.webExtras["t3code:sidebar:working-expanded"]).toBe("false");
+      expect(mergedSync.webExtras["t3code:theme"]).toBe("tokyo-night");
     } finally {
       await app.close();
       await desktopSupervisor.shutdown();
